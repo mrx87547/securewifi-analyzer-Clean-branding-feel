@@ -1,0 +1,415 @@
+{
+  "report_metadata": {
+    "tool_name": "WiFi Security Analyzer",
+    "tool_version": "1.0.0",
+    "generated_at": "2026-05-02T21:22:26.402005",
+    "interface": "wlan0",
+    "scan_started": "2026-05-02 21:22:26",
+    "total_networks_found": 8
+  },
+  "statistics": {
+    "total_networks": 8,
+    "average_risk_score": 35.9,
+    "by_encryption": {
+      "OPEN": 2,
+      "WEP": 1,
+      "WPA": 1,
+      "WPA2": 3,
+      "WPA3": 1
+    },
+    "by_risk_label": {
+      "Vulnerable": 4,
+      "Moderate": 2,
+      "Secure": 2
+    },
+    "open_networks": 2,
+    "wep_networks": 1,
+    "wps_enabled_count": 3,
+    "hidden_ssid_count": 1,
+    "critical_count": 0,
+    "vulnerable_count": 4
+  },
+  "networks": [
+    {
+      "ssid": "CoffeeShop_Free",
+      "bssid": "AA:BB:CC:11:22:33",
+      "signal_dbm": -45,
+      "channel": 6,
+      "frequency_ghz": 2.437,
+      "encryption": "OPEN",
+      "hidden": false,
+      "wps": false,
+      "risk": {
+        "score": 54,
+        "label": "Vulnerable",
+        "top_risk": "Open / Unencrypted Network",
+        "breakdown": {
+          "encryption_penalty": 100,
+          "config_penalty": 0,
+          "signal_penalty": 60,
+          "rogue_penalty": 30
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "OPEN",
+          "vulnerability": "Open / Unencrypted Network",
+          "risk_level": "Critical",
+          "description": "The network broadcasts without any encryption or authentication. All data transmitted over this network is sent in plain-text and can be captured by anyone within radio range.",
+          "unauthorized_access_scenario": "Any device within wireless range can associate with this AP without providing credentials.  An attacker could passively capture all traffic (HTTP requests, DNS queries, unencrypted emails) using a standard packet-capture tool, or perform a man-in-the-middle (MitM) attack to intercept or modify data in transit.",
+          "recommendation": "Enable WPA3 Personal encryption immediately.  If WPA3 is not supported by the access point, use WPA2-AES.  Never transmit sensitive information over an open network — use a VPN when on public hotspots.",
+          "wps_enabled": false
+        },
+        "configuration": [],
+        "rogue_ap": [
+          {
+            "category": "Rogue AP",
+            "check": "Duplicate SSID",
+            "risk_level": "High",
+            "description": "The SSID 'CoffeeShop_Free' is broadcast by 2 different access points (BSSIDs: AA:BB:CC:11:22:33, FF:EE:DD:33:22:11).  While this is normal for enterprise mesh networks or large deployments, on residential or small-business networks it often indicates a rogue AP.",
+            "unauthorized_access_scenario": "An attacker can set up a 'evil-twin' access point that clones the SSID of a legitimate network.  Clients configured to auto-connect will associate with whichever AP has the strongest signal — often the rogue. Once connected, all traffic flows through the attacker's device, enabling credential theft, session hijacking, and malware injection.",
+            "recommendation": "Investigate all access points broadcasting this SSID and verify each BSSID against your known hardware inventory.  Implement 802.1X (RADIUS) authentication to prevent unauthorised APs from accepting client connections.  Deploy a Wireless Intrusion Prevention System (WIPS)."
+          }
+        ]
+      }
+    },
+    {
+      "ssid": "CoffeeShop_Free",
+      "bssid": "FF:EE:DD:33:22:11",
+      "signal_dbm": -50,
+      "channel": 6,
+      "frequency_ghz": 2.437,
+      "encryption": "OPEN",
+      "hidden": false,
+      "wps": false,
+      "risk": {
+        "score": 54,
+        "label": "Vulnerable",
+        "top_risk": "Open / Unencrypted Network",
+        "breakdown": {
+          "encryption_penalty": 100,
+          "config_penalty": 0,
+          "signal_penalty": 60,
+          "rogue_penalty": 30
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "OPEN",
+          "vulnerability": "Open / Unencrypted Network",
+          "risk_level": "Critical",
+          "description": "The network broadcasts without any encryption or authentication. All data transmitted over this network is sent in plain-text and can be captured by anyone within radio range.",
+          "unauthorized_access_scenario": "Any device within wireless range can associate with this AP without providing credentials.  An attacker could passively capture all traffic (HTTP requests, DNS queries, unencrypted emails) using a standard packet-capture tool, or perform a man-in-the-middle (MitM) attack to intercept or modify data in transit.",
+          "recommendation": "Enable WPA3 Personal encryption immediately.  If WPA3 is not supported by the access point, use WPA2-AES.  Never transmit sensitive information over an open network — use a VPN when on public hotspots.",
+          "wps_enabled": false
+        },
+        "configuration": [],
+        "rogue_ap": [
+          {
+            "category": "Rogue AP",
+            "check": "Duplicate SSID",
+            "risk_level": "High",
+            "description": "The SSID 'CoffeeShop_Free' is broadcast by 2 different access points (BSSIDs: FF:EE:DD:33:22:11, AA:BB:CC:11:22:33).  While this is normal for enterprise mesh networks or large deployments, on residential or small-business networks it often indicates a rogue AP.",
+            "unauthorized_access_scenario": "An attacker can set up a 'evil-twin' access point that clones the SSID of a legitimate network.  Clients configured to auto-connect will associate with whichever AP has the strongest signal — often the rogue. Once connected, all traffic flows through the attacker's device, enabling credential theft, session hijacking, and malware injection.",
+            "recommendation": "Investigate all access points broadcasting this SSID and verify each BSSID against your known hardware inventory.  Implement 802.1X (RADIUS) authentication to prevent unauthorised APs from accepting client connections.  Deploy a Wireless Intrusion Prevention System (WIPS)."
+          }
+        ]
+      }
+    },
+    {
+      "ssid": "OldOfficeNetwork",
+      "bssid": "AA:BB:CC:11:22:55",
+      "signal_dbm": -60,
+      "channel": 11,
+      "frequency_ghz": 2.462,
+      "encryption": "WEP",
+      "hidden": false,
+      "wps": false,
+      "risk": {
+        "score": 42,
+        "label": "Vulnerable",
+        "top_risk": "WEP Encryption (Broken Protocol)",
+        "breakdown": {
+          "encryption_penalty": 90,
+          "config_penalty": 0,
+          "signal_penalty": 40,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WEP",
+          "vulnerability": "WEP Encryption (Broken Protocol)",
+          "risk_level": "Critical",
+          "description": "WEP (Wired Equivalent Privacy) was deprecated in 2004 and is cryptographically broken.  Its RC4 key-stream can be fully recovered by statistical analysis of a few thousand captured frames.",
+          "unauthorized_access_scenario": "An attacker can capture WEP-encrypted frames passively and use publicly available statistical attacks to recover the WEP key.  The time to crack a 64-bit or 128-bit WEP key is typically under one minute once sufficient IVs are collected, after which the attacker gains full network access as if they knew the password.",
+          "recommendation": "Replace WEP with WPA3 immediately.  Any device so old that it only supports WEP should be retired.  Do not store or transmit any sensitive data on WEP-protected networks.",
+          "wps_enabled": false
+        },
+        "configuration": [],
+        "rogue_ap": []
+      }
+    },
+    {
+      "ssid": "Netgear_ABCD",
+      "bssid": "AA:BB:CC:11:22:99",
+      "signal_dbm": -80,
+      "channel": 1,
+      "frequency_ghz": 2.412,
+      "encryption": "WPA",
+      "hidden": false,
+      "wps": true,
+      "risk": {
+        "score": 41,
+        "label": "Vulnerable",
+        "top_risk": "WPA-TKIP (Deprecated Protocol)",
+        "breakdown": {
+          "encryption_penalty": 60,
+          "config_penalty": 55,
+          "signal_penalty": 5,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WPA",
+          "vulnerability": "WPA-TKIP (Deprecated Protocol)",
+          "risk_level": "High",
+          "description": "WPA with TKIP (Temporal Key Integrity Protocol) was introduced as a patch for WEP and shares several of its weaknesses.  TKIP has been deprecated since 2012 (IEEE 802.11-2012) and is no longer considered secure for protecting sensitive data.",
+          "unauthorized_access_scenario": "While a full WPA-TKIP key recovery requires more frames than WEP, practical attacks such as the Beck–Tews and Ohigashi–Morii attacks can forge short packets and, in some configurations, recover the MIC key.  Dictionary and rule-based attacks against the WPA handshake remain highly effective if the passphrase is weak.",
+          "recommendation": "Upgrade to WPA3 Personal (or at minimum WPA2-AES).  Disable TKIP and WPA on the access point settings panel.  Ensure the passphrase is at least 12 characters with mixed case, digits, and symbols.",
+          "wps_enabled": true,
+          "wps_warning": "WPS (Wi-Fi Protected Setup) is enabled.  The WPS PIN attack reduces the effective authentication key-space from billions of possibilities to approximately 11,000 guesses, allowing an attacker to recover the network password in hours without a GPU."
+        },
+        "configuration": [
+          {
+            "category": "Configuration",
+            "check": "Default / Vendor SSID",
+            "risk_level": "High",
+            "description": "The SSID 'Netgear_ABCD' matches the default naming convention for vendor equipment (prefix: 'netgear').  Default SSIDs indicate the router may still be using factory-default credentials.",
+            "unauthorized_access_scenario": "When a router retains its default SSID, it frequently also retains its default admin password.  An attacker can look up the default credentials for the identified vendor online and attempt to log in to the router's web admin panel, potentially gaining full network control: port-forwarding changes, DNS hijacking, and disabling firewall rules.",
+            "recommendation": "Change the SSID to a unique name that does not reveal the router model or vendor.  Immediately change the admin password to a strong, unique value.  Update the router firmware."
+          },
+          {
+            "category": "Configuration",
+            "check": "WPS Enabled",
+            "risk_level": "High",
+            "description": "Wi-Fi Protected Setup (WPS) is enabled on this access point.  The WPS PIN method has a fundamental design flaw — the 8-digit PIN is verified in two halves, reducing the effective key-space from 100,000,000 to approximately 11,000 attempts.",
+            "unauthorized_access_scenario": "An attacker can use the Pixie Dust attack (offline WPS attack) or a standard online PIN brute-force to recover the WPS PIN and subsequently the WPA2 passphrase.  Even with rate-limiting, the attack is usually feasible within hours.  Many ISP-provided routers are known to have predictable PINs derivable from the BSSID.",
+            "recommendation": "Disable WPS in the router admin panel.  If the router does not allow WPS to be disabled, replace it.  WPS-PBC (push-button) mode is safer than PIN mode but still carries some risk."
+          }
+        ],
+        "rogue_ap": []
+      }
+    },
+    {
+      "ssid": "TP-Link_2D4E",
+      "bssid": "AA:BB:CC:11:22:44",
+      "signal_dbm": -55,
+      "channel": 1,
+      "frequency_ghz": 2.412,
+      "encryption": "WPA2",
+      "hidden": false,
+      "wps": true,
+      "risk": {
+        "score": 36,
+        "label": "Moderate",
+        "top_risk": "Default / Vendor SSID",
+        "breakdown": {
+          "encryption_penalty": 35,
+          "config_penalty": 55,
+          "signal_penalty": 40,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WPA2",
+          "vulnerability": "WPA2-PSK (Moderate Risk — Passphrase Dependent)",
+          "risk_level": "Moderate",
+          "description": "WPA2 with AES-CCMP is currently the most widely deployed wireless security standard and is considered secure when a strong passphrase is used.  However, the 4-way handshake can be captured and subjected to offline dictionary or brute-force attacks.",
+          "unauthorized_access_scenario": "An attacker who captures a WPA2 4-way authentication handshake (which is broadcast in the clear during association) can run it against wordlists or GPU-accelerated brute-force tools offline, with no further interaction with the AP.  Common or default passphrases are typically found within seconds to minutes.  WPS PIN mode (if enabled) additionally reduces the effective key-space to ~11,000 guesses.",
+          "recommendation": "Use a passphrase of at least 16 random characters.  Disable WPS. Consider upgrading to WPA3 which is resistant to offline dictionary attacks through Simultaneous Authentication of Equals (SAE).  Enable Management Frame Protection (802.11w).",
+          "wps_enabled": true,
+          "wps_warning": "WPS (Wi-Fi Protected Setup) is enabled.  The WPS PIN attack reduces the effective authentication key-space from billions of possibilities to approximately 11,000 guesses, allowing an attacker to recover the network password in hours without a GPU."
+        },
+        "configuration": [
+          {
+            "category": "Configuration",
+            "check": "Default / Vendor SSID",
+            "risk_level": "High",
+            "description": "The SSID 'TP-Link_2D4E' matches the default naming convention for vendor equipment (prefix: 'tp-link').  Default SSIDs indicate the router may still be using factory-default credentials.",
+            "unauthorized_access_scenario": "When a router retains its default SSID, it frequently also retains its default admin password.  An attacker can look up the default credentials for the identified vendor online and attempt to log in to the router's web admin panel, potentially gaining full network control: port-forwarding changes, DNS hijacking, and disabling firewall rules.",
+            "recommendation": "Change the SSID to a unique name that does not reveal the router model or vendor.  Immediately change the admin password to a strong, unique value.  Update the router firmware."
+          },
+          {
+            "category": "Configuration",
+            "check": "WPS Enabled",
+            "risk_level": "High",
+            "description": "Wi-Fi Protected Setup (WPS) is enabled on this access point.  The WPS PIN method has a fundamental design flaw — the 8-digit PIN is verified in two halves, reducing the effective key-space from 100,000,000 to approximately 11,000 attempts.",
+            "unauthorized_access_scenario": "An attacker can use the Pixie Dust attack (offline WPS attack) or a standard online PIN brute-force to recover the WPS PIN and subsequently the WPA2 passphrase.  Even with rate-limiting, the attack is usually feasible within hours.  Many ISP-provided routers are known to have predictable PINs derivable from the BSSID.",
+            "recommendation": "Disable WPS in the router admin panel.  If the router does not allow WPS to be disabled, replace it.  WPS-PBC (push-button) mode is safer than PIN mode but still carries some risk."
+          }
+        ],
+        "rogue_ap": []
+      }
+    },
+    {
+      "ssid": "JioFiber_Guest",
+      "bssid": "AA:BB:CC:11:22:77",
+      "signal_dbm": -70,
+      "channel": 6,
+      "frequency_ghz": 2.437,
+      "encryption": "WPA2",
+      "hidden": false,
+      "wps": true,
+      "risk": {
+        "score": 34,
+        "label": "Moderate",
+        "top_risk": "Default / Vendor SSID",
+        "breakdown": {
+          "encryption_penalty": 35,
+          "config_penalty": 55,
+          "signal_penalty": 20,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WPA2",
+          "vulnerability": "WPA2-PSK (Moderate Risk — Passphrase Dependent)",
+          "risk_level": "Moderate",
+          "description": "WPA2 with AES-CCMP is currently the most widely deployed wireless security standard and is considered secure when a strong passphrase is used.  However, the 4-way handshake can be captured and subjected to offline dictionary or brute-force attacks.",
+          "unauthorized_access_scenario": "An attacker who captures a WPA2 4-way authentication handshake (which is broadcast in the clear during association) can run it against wordlists or GPU-accelerated brute-force tools offline, with no further interaction with the AP.  Common or default passphrases are typically found within seconds to minutes.  WPS PIN mode (if enabled) additionally reduces the effective key-space to ~11,000 guesses.",
+          "recommendation": "Use a passphrase of at least 16 random characters.  Disable WPS. Consider upgrading to WPA3 which is resistant to offline dictionary attacks through Simultaneous Authentication of Equals (SAE).  Enable Management Frame Protection (802.11w).",
+          "wps_enabled": true,
+          "wps_warning": "WPS (Wi-Fi Protected Setup) is enabled.  The WPS PIN attack reduces the effective authentication key-space from billions of possibilities to approximately 11,000 guesses, allowing an attacker to recover the network password in hours without a GPU."
+        },
+        "configuration": [
+          {
+            "category": "Configuration",
+            "check": "Default / Vendor SSID",
+            "risk_level": "High",
+            "description": "The SSID 'JioFiber_Guest' matches the default naming convention for vendor equipment (prefix: 'jiofiber').  Default SSIDs indicate the router may still be using factory-default credentials.",
+            "unauthorized_access_scenario": "When a router retains its default SSID, it frequently also retains its default admin password.  An attacker can look up the default credentials for the identified vendor online and attempt to log in to the router's web admin panel, potentially gaining full network control: port-forwarding changes, DNS hijacking, and disabling firewall rules.",
+            "recommendation": "Change the SSID to a unique name that does not reveal the router model or vendor.  Immediately change the admin password to a strong, unique value.  Update the router firmware."
+          },
+          {
+            "category": "Configuration",
+            "check": "WPS Enabled",
+            "risk_level": "High",
+            "description": "Wi-Fi Protected Setup (WPS) is enabled on this access point.  The WPS PIN method has a fundamental design flaw — the 8-digit PIN is verified in two halves, reducing the effective key-space from 100,000,000 to approximately 11,000 attempts.",
+            "unauthorized_access_scenario": "An attacker can use the Pixie Dust attack (offline WPS attack) or a standard online PIN brute-force to recover the WPS PIN and subsequently the WPA2 passphrase.  Even with rate-limiting, the attack is usually feasible within hours.  Many ISP-provided routers are known to have predictable PINs derivable from the BSSID.",
+            "recommendation": "Disable WPS in the router admin panel.  If the router does not allow WPS to be disabled, replace it.  WPS-PBC (push-button) mode is safer than PIN mode but still carries some risk."
+          }
+        ],
+        "rogue_ap": []
+      }
+    },
+    {
+      "ssid": "<hidden>",
+      "bssid": "AA:BB:CC:11:22:88",
+      "signal_dbm": -75,
+      "channel": 11,
+      "frequency_ghz": 2.462,
+      "encryption": "WPA2",
+      "hidden": true,
+      "wps": false,
+      "risk": {
+        "score": 14,
+        "label": "Secure",
+        "top_risk": "WPA2-PSK (Moderate Risk — Passphrase Dependent)",
+        "breakdown": {
+          "encryption_penalty": 25,
+          "config_penalty": 10,
+          "signal_penalty": 5,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WPA2",
+          "vulnerability": "WPA2-PSK (Moderate Risk — Passphrase Dependent)",
+          "risk_level": "Moderate",
+          "description": "WPA2 with AES-CCMP is currently the most widely deployed wireless security standard and is considered secure when a strong passphrase is used.  However, the 4-way handshake can be captured and subjected to offline dictionary or brute-force attacks.",
+          "unauthorized_access_scenario": "An attacker who captures a WPA2 4-way authentication handshake (which is broadcast in the clear during association) can run it against wordlists or GPU-accelerated brute-force tools offline, with no further interaction with the AP.  Common or default passphrases are typically found within seconds to minutes.  WPS PIN mode (if enabled) additionally reduces the effective key-space to ~11,000 guesses.",
+          "recommendation": "Use a passphrase of at least 16 random characters.  Disable WPS. Consider upgrading to WPA3 which is resistant to offline dictionary attacks through Simultaneous Authentication of Equals (SAE).  Enable Management Frame Protection (802.11w).",
+          "wps_enabled": false
+        },
+        "configuration": [
+          {
+            "category": "Configuration",
+            "check": "Hidden SSID",
+            "risk_level": "Low",
+            "description": "The network is configured to suppress its SSID in beacon frames (hidden network).  This is a security-through-obscurity measure that provides minimal practical protection.",
+            "unauthorized_access_scenario": "Passive wireless scanners can detect hidden networks from beacon frames even without an SSID.  When a legitimate client connects, the SSID is transmitted in the probe request in plain-text, instantly revealing it to any passive observer.  The hidden SSID can also cause connected clients to broadcast probe requests for the network everywhere they go, leaking the SSID even when away from home.",
+            "recommendation": "Do not rely on SSID hiding as a security control.  Instead, use strong encryption (WPA3), a unique passphrase, and optionally MAC-address filtering as a secondary (not primary) control."
+          }
+        ],
+        "rogue_ap": []
+      }
+    },
+    {
+      "ssid": "HomeNet_5G",
+      "bssid": "AA:BB:CC:11:22:66",
+      "signal_dbm": -65,
+      "channel": 36,
+      "frequency_ghz": 5.18,
+      "encryption": "WPA3",
+      "hidden": false,
+      "wps": false,
+      "risk": {
+        "score": 12,
+        "label": "Secure",
+        "top_risk": "Default / Vendor SSID",
+        "breakdown": {
+          "encryption_penalty": 0,
+          "config_penalty": 30,
+          "signal_penalty": 20,
+          "rogue_penalty": 0
+        }
+      },
+      "vulnerabilities": {
+        "encryption": {
+          "category": "Encryption",
+          "encryption_type": "WPA3",
+          "vulnerability": "WPA3 (Secure Configuration Detected)",
+          "risk_level": "Low",
+          "description": "WPA3 uses Simultaneous Authentication of Equals (SAE) to provide forward secrecy and resistance to offline dictionary attacks.  This is the current best-practice for wireless security.",
+          "unauthorized_access_scenario": "WPA3 SAE prevents offline dictionary attacks because each connection attempt requires real-time interaction with the AP, making large-scale brute-force impractical.  Side-channel attacks against early WPA3 implementations (Dragonblood, 2019) have been patched in modern firmware.",
+          "recommendation": "Keep AP firmware up to date.  Ensure SAE-only mode is selected (not WPA3-Transition which also allows WPA2).  Enable Management Frame Protection (802.11w) in required mode.",
+          "wps_enabled": false
+        },
+        "configuration": [
+          {
+            "category": "Configuration",
+            "check": "Default / Vendor SSID",
+            "risk_level": "High",
+            "description": "The SSID 'HomeNet_5G' matches the default naming convention for vendor equipment (prefix: 'home').  Default SSIDs indicate the router may still be using factory-default credentials.",
+            "unauthorized_access_scenario": "When a router retains its default SSID, it frequently also retains its default admin password.  An attacker can look up the default credentials for the identified vendor online and attempt to log in to the router's web admin panel, potentially gaining full network control: port-forwarding changes, DNS hijacking, and disabling firewall rules.",
+            "recommendation": "Change the SSID to a unique name that does not reveal the router model or vendor.  Immediately change the admin password to a strong, unique value.  Update the router firmware."
+          }
+        ],
+        "rogue_ap": []
+      }
+    }
+  ],
+  "recommendations": [
+    "Enable WPA3 Personal encryption immediately.  If WPA3 is not supported by the access point, use WPA2-AES.  Never transmit sensitive information over an open network — use a VPN when on public hotspots.",
+    "Investigate all access points broadcasting this SSID and verify each BSSID against your known hardware inventory.  Implement 802.1X (RADIUS) authentication to prevent unauthorised APs from accepting client connections.  Deploy a Wireless Intrusion Prevention System (WIPS).",
+    "Replace WEP with WPA3 immediately.  Any device so old that it only supports WEP should be retired.  Do not store or transmit any sensitive data on WEP-protected networks.",
+    "Upgrade to WPA3 Personal (or at minimum WPA2-AES).  Disable TKIP and WPA on the access point settings panel.  Ensure the passphrase is at least 12 characters with mixed case, digits, and symbols.",
+    "Change the SSID to a unique name that does not reveal the router model or vendor.  Immediately change the admin password to a strong, unique value.  Update the router firmware.",
+    "Disable WPS in the router admin panel.  If the router does not allow WPS to be disabled, replace it.  WPS-PBC (push-button) mode is safer than PIN mode but still carries some risk.",
+    "Use a passphrase of at least 16 random characters.  Disable WPS. Consider upgrading to WPA3 which is resistant to offline dictionary attacks through Simultaneous Authentication of Equals (SAE).  Enable Management Frame Protection (802.11w).",
+    "Do not rely on SSID hiding as a security control.  Instead, use strong encryption (WPA3), a unique passphrase, and optionally MAC-address filtering as a secondary (not primary) control.",
+    "Keep AP firmware up to date.  Ensure SAE-only mode is selected (not WPA3-Transition which also allows WPA2).  Enable Management Frame Protection (802.11w) in required mode."
+  ]
+}

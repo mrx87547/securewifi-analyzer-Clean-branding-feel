@@ -1,0 +1,7 @@
+21:22:26  INFO      utils.helpers  Logging initialised → logs/wsa_20260502.log
+21:22:26  INFO      scanner.scan  Starting WiFi scan on interface: wlan0
+21:22:26  WARNING   scanner.scan  No scan tools produced results; using demo dataset.
+21:22:26  WARNING   analyzer.rogue  Rogue/evil-twin indicators for SSID 'CoffeeShop_Free' at BSSID AA:BB:CC:11:22:33: 1 finding(s)
+21:22:26  WARNING   analyzer.rogue  Rogue/evil-twin indicators for SSID 'CoffeeShop_Free' at BSSID FF:EE:DD:33:22:11: 1 finding(s)
+21:22:26  INFO      reporting.report_json  JSON report saved → output/wsa_report_20260502_212226.json
+21:22:26  INFO      reporting.report_pdf  PDF report saved → output/wsa_report_20260502_212226.pdf

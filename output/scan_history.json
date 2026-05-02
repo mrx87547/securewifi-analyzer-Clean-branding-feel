@@ -1,0 +1,10 @@
+[
+  {
+    "timestamp": "2026-05-02 21:22:26",
+    "interface": "wlan0",
+    "networks": 8,
+    "critical": 0,
+    "vulnerable": 4,
+    "avg_score": 35.9
+  }
+]
