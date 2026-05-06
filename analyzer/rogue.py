@@ -1,10 +1,8 @@
 """
-analyzer/rogue.py
-Detects potential rogue access points by looking for:
-  - Duplicate SSIDs with different BSSIDs
-  - Mismatched encryption for the same SSID
-  - Evil-twin indicators (same SSID, similar signal, open encryption)
+Rogue access point and evil-twin indicators.
 """
+
+from __future__ import annotations
 
 import logging
 from collections import defaultdict
@@ -12,189 +10,110 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def detect_rogue_aps(networks: list[dict]) -> dict[str, list[dict]]:
-    """Analyse all scanned networks for rogue / evil-twin AP indicators.
-
-    Args:
-        networks: Full list of normalised network dicts from the scanner.
-
-    Returns:
-        Dict mapping BSSID → list of rogue findings for that network.
-        Networks with no rogue indicators will not appear in the dict.
-    """
-    # Group networks by SSID
+    """Analyse all scanned networks for rogue AP indicators."""
     ssid_groups: dict[str, list[dict]] = defaultdict(list)
-    for net in networks:
-        ssid = net.get("ssid", "<hidden>")
-        ssid_groups[ssid].append(net)
+    for network in networks:
+        ssid = str(network.get("ssid", "<hidden>"))
+        ssid_groups[ssid].append(network)
 
     rogue_findings: dict[str, list[dict]] = {}
 
     for ssid, group in ssid_groups.items():
         if ssid == "<hidden>" or len(group) < 2:
-            continue   # Single network per SSID → no rogue concern
+            continue
 
-        # Multiple APs sharing this SSID — inspect each pair
-        for net in group:
-            bssid    = net["bssid"]
-            findings = []
+        encryption_types = {str(item.get("encryption", "UNKNOWN")) for item in group}
+        for network in group:
+            bssid = str(network.get("bssid", ""))
+            findings = [_finding_duplicate_ssid(ssid, group, network)]
 
-            # Duplicate SSID (always flag)
-            findings.append(_finding_duplicate_ssid(ssid, group, net))
+            if len(encryption_types) > 1:
+                findings.append(_finding_enc_mismatch(ssid, encryption_types))
 
-            # Encryption mismatch within same SSID
-            enc_types = {n["encryption"] for n in group}
-            if len(enc_types) > 1:
-                findings.append(_finding_enc_mismatch(ssid, enc_types, net))
-
-            # Open network with same name as encrypted siblings → strong evil-twin signal
-            if net["encryption"] == "OPEN":
+            if network.get("encryption") == "OPEN":
                 encrypted_siblings = [
-                    n for n in group
-                    if n["encryption"] not in ("OPEN", "UNKNOWN") and n["bssid"] != bssid
+                    item
+                    for item in group
+                    if item.get("encryption") not in {"OPEN", "UNKNOWN"} and item.get("bssid") != bssid
                 ]
                 if encrypted_siblings:
-                    findings.append(_finding_evil_twin(ssid, net, encrypted_siblings))
+                    findings.append(_finding_evil_twin(ssid, network, encrypted_siblings))
 
-            if findings:
+            if findings and bssid:
                 rogue_findings[bssid] = findings
                 logger.warning(
-                    "Rogue/evil-twin indicators for SSID '%s' at BSSID %s: %d finding(s)",
-                    ssid,
-                    bssid,
-                    len(findings),
+                    "Rogue AP indicators detected",
+                    extra={
+                        "event": "rogue_ap_detected",
+                        "ssid": ssid,
+                        "bssid": bssid,
+                        "finding_count": len(findings),
+                    },
                 )
 
     return rogue_findings
 
 
-# ── Finding Builders ──────────────────────────────────────────────────────────
-
-def _finding_duplicate_ssid(
-    ssid: str,
-    group: list[dict],
-    network: dict,
-) -> dict:
-    """Build a duplicate-SSID finding.
-
-    Args:
-        ssid:    The shared SSID string.
-        group:   All networks sharing this SSID.
-        network: The specific network being flagged.
-
-    Returns:
-        Finding dict.
-    """
-    other_bssids = [n["bssid"] for n in group if n["bssid"] != network["bssid"]]
+def _finding_duplicate_ssid(ssid: str, group: list[dict], network: dict) -> dict:
+    other_bssids = [str(item.get("bssid", "")) for item in group if item.get("bssid") != network.get("bssid")]
+    bssids = [str(network.get("bssid", "")), *other_bssids]
     return {
-        "category":    "Rogue AP",
-        "check":       "Duplicate SSID",
-        "risk_level":  "High",
+        "category": "Rogue AP",
+        "check": "Duplicate SSID",
+        "risk_level": "High",
         "description": (
-            f"The SSID '{ssid}' is broadcast by {len(group)} different access points "
-            f"(BSSIDs: {', '.join([network['bssid']] + other_bssids)}).  "
-            f"While this is normal for enterprise mesh networks or large deployments, "
-            f"on residential or small-business networks it often indicates a rogue AP."
+            f"The SSID '{ssid}' is broadcast by {len(group)} access points "
+            f"(BSSIDs: {', '.join(bssids)}). This may be normal in managed enterprise "
+            "deployments, but it is suspicious on small or unmanaged networks."
         ),
         "unauthorized_access_scenario": (
-            "An attacker can set up a 'evil-twin' access point that clones the SSID "
-            "of a legitimate network.  Clients configured to auto-connect will "
-            "associate with whichever AP has the strongest signal — often the rogue. "
-            "Once connected, all traffic flows through the attacker's device, "
-            "enabling credential theft, session hijacking, and malware injection."
+            "An attacker can clone a legitimate SSID with a stronger signal. Clients "
+            "configured to auto-connect may associate with the rogue AP."
         ),
         "recommendation": (
-            "Investigate all access points broadcasting this SSID and verify each "
-            "BSSID against your known hardware inventory.  Implement 802.1X "
-            "(RADIUS) authentication to prevent unauthorised APs from accepting "
-            "client connections.  Deploy a Wireless Intrusion Prevention System (WIPS)."
+            "Verify each BSSID against a known AP inventory. Remove unapproved devices "
+            "and use 802.1X or wireless intrusion monitoring for managed environments."
         ),
         "penalty_score": 30,
     }
 
 
-def _finding_enc_mismatch(
-    ssid:      str,
-    enc_types: set[str],
-    network:   dict,
-) -> dict:
-    """Build an encryption-mismatch finding.
-
-    Args:
-        ssid:      The shared SSID.
-        enc_types: All encryption types seen for this SSID.
-        network:   The specific network being flagged.
-
-    Returns:
-        Finding dict.
-    """
+def _finding_enc_mismatch(ssid: str, enc_types: set[str]) -> dict:
     return {
-        "category":    "Rogue AP",
-        "check":       "Encryption Mismatch",
-        "risk_level":  "Critical",
+        "category": "Rogue AP",
+        "check": "Encryption Mismatch",
+        "risk_level": "Critical",
         "description": (
-            f"APs broadcasting SSID '{ssid}' use inconsistent encryption types: "
-            f"{', '.join(sorted(enc_types))}.  Legitimate access points in the same "
-            f"network should use identical security settings."
+            f"APs broadcasting SSID '{ssid}' use inconsistent encryption types: {', '.join(sorted(enc_types))}."
         ),
         "unauthorized_access_scenario": (
-            "A rogue AP operator frequently uses weaker or no encryption on their "
-            "evil-twin to avoid needing the real password.  Clients that auto-connect "
-            "to the SSID may negotiate a downgraded security handshake, exposing "
-            "their traffic.  WPA2-downgrade attacks can force clients to connect to "
-            "WPA or even open networks."
+            "A rogue AP may advertise the same SSID with weaker security to encourage "
+            "clients to downgrade or connect without the expected protection."
         ),
         "recommendation": (
-            "Immediately audit all physical access points.  Remove any unrecognised "
-            "hardware.  Standardise encryption to WPA3 across all APs.  Enable "
-            "802.11w Management Frame Protection to prevent disassociation attacks "
-            "used to push clients to rogue APs."
+            "Audit all APs broadcasting this SSID. Standardise encryption settings and remove unrecognised hardware."
         ),
         "penalty_score": 40,
     }
 
 
-def _finding_evil_twin(
-    ssid:               str,
-    rogue_candidate:    dict,
-    encrypted_siblings: list[dict],
-) -> dict:
-    """Build an evil-twin finding for an open AP cloning an encrypted SSID.
-
-    Args:
-        ssid:               The shared SSID.
-        rogue_candidate:    The open (potentially rogue) network.
-        encrypted_siblings: Encrypted networks sharing the same SSID.
-
-    Returns:
-        Finding dict.
-    """
-    sibling_bssids = [n["bssid"] for n in encrypted_siblings]
+def _finding_evil_twin(ssid: str, rogue_candidate: dict, encrypted_siblings: list[dict]) -> dict:
+    sibling_bssids = [str(item.get("bssid", "")) for item in encrypted_siblings]
     return {
-        "category":    "Rogue AP",
-        "check":       "Probable Evil-Twin AP",
-        "risk_level":  "Critical",
+        "category": "Rogue AP",
+        "check": "Probable Evil-Twin AP",
+        "risk_level": "Critical",
         "description": (
-            f"OPEN network '{ssid}' (BSSID: {rogue_candidate['bssid']}) coexists "
-            f"with encrypted AP(s) using the same SSID "
-            f"({', '.join(sibling_bssids)}).  This is a strong indicator of a "
-            f"deliberate evil-twin attack."
+            f"OPEN network '{ssid}' (BSSID: {rogue_candidate.get('bssid', '')}) coexists "
+            f"with encrypted APs using the same SSID ({', '.join(sibling_bssids)})."
         ),
         "unauthorized_access_scenario": (
-            "The attacker broadcasts an open AP with the same SSID as a legitimate "
-            "encrypted network.  Clients that connect to the rogue AP transmit all "
-            "data unencrypted.  The attacker can capture login credentials, session "
-            "tokens, API keys, and any other data transmitted over the connection.  "
-            "SSL stripping tools can additionally downgrade HTTPS connections on "
-            "browsers that don't enforce HSTS."
+            "Clients may connect to the open clone and expose traffic to interception or man-in-the-middle attacks."
         ),
         "recommendation": (
-            "Treat this as a security incident.  Do not connect to this network. "
-            "Report the rogue AP to the venue's IT/security team.  Use a VPN on "
-            "all devices.  Enable 802.11w MFP on legitimate APs to harden against "
-            "de-authentication attacks used to push clients onto rogue APs."
+            "Treat this as a security incident. Do not connect to the open clone, locate "
+            "the transmitting AP, and enable management frame protection where available."
         ),
         "penalty_score": 50,
     }

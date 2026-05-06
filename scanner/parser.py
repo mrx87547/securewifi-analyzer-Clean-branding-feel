@@ -1,119 +1,90 @@
 """
-scanner/parser.py
-Parses raw stdout from iw, iwlist, and nmcli into structured network dicts.
+Parsers for raw stdout produced by iw, iwlist, and nmcli.
 """
 
-import re
+from __future__ import annotations
+
 import logging
-from typing import Optional
+import re
+
 from utils.helpers import normalise_bssid, sanitise_ssid
 
 logger = logging.getLogger(__name__)
 
+BSSID_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}"
 
-# ── Shared data model ─────────────────────────────────────────────────────────
 
 def _empty_network() -> dict:
     """Return a blank network record with all expected keys initialised."""
     return {
-        "ssid":       "<hidden>",
-        "bssid":      "00:00:00:00:00:00",
-        "signal":     -100,
-        "channel":    0,
-        "frequency":  0.0,
+        "ssid": "<hidden>",
+        "bssid": "00:00:00:00:00:00",
+        "signal": -100,
+        "channel": 0,
+        "frequency": 0.0,
         "encryption": "UNKNOWN",
-        "hidden":     False,
-        "wps":        False,
-        "vendor":     "",
-        "raw_caps":   [],
+        "hidden": False,
+        "wps": False,
+        "vendor": "",
+        "raw_caps": [],
     }
 
 
-# ── iw dev <iface> scan ───────────────────────────────────────────────────────
-
 def parse_iw_scan(raw: str) -> list[dict]:
-    """Parse the output of `iw dev <iface> scan` into a list of networks.
-
-    Args:
-        raw: Raw stdout string from the iw scan command.
-
-    Returns:
-        List of network dicts with normalised fields.
-    """
-    networks: list[dict] = []
+    """Parse ``iw dev <iface> scan`` output into normalised network dicts."""
     if not raw:
-        return networks
+        return []
 
-    # Split into per-BSS blocks
-    blocks = re.split(r"(?=BSS [0-9a-fA-F:]{17})", raw)
+    networks: list[dict] = []
+    blocks = re.split(rf"(?=^BSS {BSSID_RE})", raw, flags=re.MULTILINE)
 
     for block in blocks:
-        if not block.strip():
+        if not block.strip() or not re.search(rf"^BSS {BSSID_RE}", block, re.MULTILINE):
             continue
+
         net = _empty_network()
 
-        # BSSID
-        m = re.search(r"BSS ([0-9a-fA-F:]{17})", block)
-        if m:
-            net["bssid"] = normalise_bssid(m.group(1))
+        match = re.search(rf"^BSS ({BSSID_RE})", block, re.MULTILINE)
+        if match:
+            net["bssid"] = normalise_bssid(match.group(1))
 
-        # SSID (may be absent for hidden networks)
-        m = re.search(r"SSID:\s*(.+)", block)
-        if m:
-            raw_ssid = sanitise_ssid(m.group(1))
-            if raw_ssid:
-                net["ssid"]   = raw_ssid
-                net["hidden"] = False
-            else:
-                net["ssid"]   = "<hidden>"
-                net["hidden"] = True
+        match = re.search(r"^[ \t]*SSID:[ \t]*(.*)$", block, re.MULTILINE)
+        if match:
+            ssid = sanitise_ssid(match.group(1))
+            net["ssid"] = ssid if ssid else "<hidden>"
+            net["hidden"] = not bool(ssid)
         else:
             net["hidden"] = True
 
-        # Signal
-        m = re.search(r"signal:\s*([-\d.]+)\s*dBm", block)
-        if m:
-            net["signal"] = int(float(m.group(1)))
+        match = re.search(r"signal:\s*(-?\d+(?:\.\d+)?)\s*dBm", block, re.IGNORECASE)
+        if match:
+            net["signal"] = int(float(match.group(1)))
 
-        # Frequency / Channel
-        m = re.search(r"freq:\s*(\d+)", block)
-        if m:
-            freq_mhz = int(m.group(1))
+        match = re.search(r"freq:\s*(\d+)", block)
+        if match:
+            freq_mhz = int(match.group(1))
             net["frequency"] = round(freq_mhz / 1000, 3)
-            net["channel"]   = _freq_to_channel(freq_mhz)
+            net["channel"] = _freq_to_channel(freq_mhz)
 
-        # Encryption — check capability lines
-        cap_lines: list[str] = []
-        for line in block.splitlines():
-            stripped = line.strip().lower()
-            if any(k in stripped for k in ("rsn", "wpa", "privacy", "wps", "capability")):
-                cap_lines.append(line.strip())
-        net["raw_caps"]   = cap_lines
+        net["raw_caps"] = _capability_lines(block)
         net["encryption"] = _derive_encryption_iw(block)
-
-        # WPS
-        if re.search(r"WPS:", block, re.IGNORECASE):
-            net["wps"] = True
+        net["wps"] = bool(re.search(r"\bWPS\b|Wi-Fi Protected Setup", block, re.IGNORECASE))
 
         networks.append(net)
-        logger.debug("iw parsed: %s  enc=%s  sig=%d", net["ssid"], net["encryption"], net["signal"])
+        logger.debug(
+            "Parsed iw network",
+            extra={"event": "parse_iw_network", "bssid": net["bssid"], "encryption": net["encryption"]},
+        )
 
     return networks
 
 
 def _derive_encryption_iw(block: str) -> str:
-    """Infer encryption type from an iw BSS block.
-
-    Args:
-        block: Raw text of a single BSS block.
-
-    Returns:
-        Encryption label: OPEN | WEP | WPA | WPA2 | WPA3.
-    """
+    """Infer encryption type from an iw BSS block."""
     has_privacy = bool(re.search(r"capability:.*?Privacy", block, re.IGNORECASE))
-    has_rsn     = bool(re.search(r"RSN:", block, re.IGNORECASE))
-    has_wpa     = bool(re.search(r"\* Version: 1", block) or re.search(r"WPA\b", block, re.IGNORECASE))
-    has_wpa3    = bool(re.search(r"SAE|OWE|Suite-B", block, re.IGNORECASE))
+    has_rsn = bool(re.search(r"\bRSN:", block, re.IGNORECASE))
+    has_wpa = bool(re.search(r"\bWPA:", block, re.IGNORECASE) or re.search(r"\* Version: 1", block))
+    has_wpa3 = bool(re.search(r"\b(SAE|OWE|Suite-B)\b", block, re.IGNORECASE))
 
     if has_wpa3:
         return "WPA3"
@@ -127,248 +98,222 @@ def _derive_encryption_iw(block: str) -> str:
 
 
 def _freq_to_channel(freq_mhz: int) -> int:
-    """Convert a frequency in MHz to a WiFi channel number.
-
-    Args:
-        freq_mhz: Frequency in megahertz.
-
-    Returns:
-        Channel number, or 0 if not recognised.
-    """
-    if 2412 <= freq_mhz <= 2484:
-        return (freq_mhz - 2412) // 5 + 1
-    if 5180 <= freq_mhz <= 5825:
+    """Convert a WiFi frequency in MHz to a channel number."""
+    if freq_mhz == 2484:
+        return 14
+    if 2412 <= freq_mhz <= 2472:
+        return ((freq_mhz - 2412) // 5) + 1
+    if 5180 <= freq_mhz <= 5885:
         return (freq_mhz - 5000) // 5
-    if 5955 <= freq_mhz <= 7115:   # 6 GHz (Wi-Fi 6E)
-        return (freq_mhz - 5955) // 5 + 1
+    if freq_mhz == 5935:
+        return 2
+    if 5955 <= freq_mhz <= 7115:
+        return ((freq_mhz - 5955) // 5) + 1
     return 0
 
 
-# ── iwlist <iface> scanning ───────────────────────────────────────────────────
-
 def parse_iwlist_scan(raw: str) -> list[dict]:
-    """Parse the output of `iwlist <iface> scanning` into a list of networks.
-
-    Args:
-        raw: Raw stdout string from the iwlist command.
-
-    Returns:
-        List of network dicts.
-    """
-    networks: list[dict] = []
+    """Parse ``iwlist <iface> scanning`` output into normalised network dicts."""
     if not raw:
-        return networks
+        return []
 
-    blocks = re.split(r"Cell \d+ - ", raw)
-    for block in blocks[1:]:          # first split is empty header
+    networks: list[dict] = []
+    blocks = re.split(r"Cell \d+\s+-\s+", raw)
+
+    for block in blocks[1:]:
         net = _empty_network()
 
-        m = re.search(r"Address:\s*([0-9A-Fa-f:]{17})", block)
-        if m:
-            net["bssid"] = normalise_bssid(m.group(1))
+        match = re.search(rf"Address:\s*({BSSID_RE})", block)
+        if match:
+            net["bssid"] = normalise_bssid(match.group(1))
 
-        m = re.search(r'ESSID:"([^"]*)"', block)
-        if m:
-            raw_ssid = sanitise_ssid(m.group(1))
-            net["ssid"]   = raw_ssid if raw_ssid else "<hidden>"
-            net["hidden"] = not bool(raw_ssid)
+        match = re.search(r'ESSID:"([^"]*)"', block)
+        if match:
+            ssid = sanitise_ssid(match.group(1))
+            net["ssid"] = ssid if ssid else "<hidden>"
+            net["hidden"] = not bool(ssid)
 
-        m = re.search(r"Signal level=([-\d]+)\s*dBm", block)
-        if m:
-            net["signal"] = int(m.group(1))
+        match = re.search(r"Signal level=(-?\d+)\s*dBm", block)
+        if match:
+            net["signal"] = int(match.group(1))
 
-        m = re.search(r"Channel:(\d+)", block)
-        if m:
-            net["channel"] = int(m.group(1))
+        match = re.search(r"Channel:(\d+)", block)
+        if match:
+            net["channel"] = int(match.group(1))
 
-        m = re.search(r"Frequency:([\d.]+)", block)
-        if m:
-            net["frequency"] = float(m.group(1))
+        match = re.search(r"Frequency:([\d.]+)", block)
+        if match:
+            net["frequency"] = float(match.group(1))
 
+        net["raw_caps"] = _capability_lines(block)
+        net["wps"] = bool(re.search(r"\bWPS\b|Wi-Fi Protected Setup", block, re.IGNORECASE))
         net["encryption"] = _derive_encryption_iwlist(block)
-
         networks.append(net)
-        logger.debug("iwlist parsed: %s", net["ssid"])
 
     return networks
 
 
 def _derive_encryption_iwlist(block: str) -> str:
-    """Infer encryption from an iwlist cell block.
-
-    Args:
-        block: Raw text of a single iwlist Cell block.
-
-    Returns:
-        Encryption label.
-    """
+    """Infer encryption from an iwlist cell block."""
     if re.search(r"Encryption key:off", block, re.IGNORECASE):
         return "OPEN"
-    if re.search(r"WPA3|SAE", block, re.IGNORECASE):
+    if re.search(r"\b(WPA3|SAE|OWE)\b", block, re.IGNORECASE):
         return "WPA3"
-    if re.search(r"WPA2|RSN", block, re.IGNORECASE):
+    if re.search(r"\b(WPA2|RSN|IEEE 802\.11i)\b", block, re.IGNORECASE):
         return "WPA2"
-    if re.search(r"WPA\b", block, re.IGNORECASE):
+    if re.search(r"\bWPA\b", block, re.IGNORECASE):
         return "WPA"
     if re.search(r"Encryption key:on", block, re.IGNORECASE):
         return "WEP"
     return "UNKNOWN"
 
 
-# ── nmcli dev wifi ────────────────────────────────────────────────────────────
-
 def parse_nmcli_scan(raw: str) -> list[dict]:
-    """Parse the output of `nmcli -f ALL dev wifi list` into networks.
-
-    nmcli column headers (with --terse are colon-separated).  We use the
-    human-readable tabular format and parse it with column offsets detected
-    from the header line.
-
-    Args:
-        raw: Raw stdout from nmcli.
-
-    Returns:
-        List of network dicts.
-    """
-    networks: list[dict] = []
+    """Parse terse or columnar ``nmcli device wifi list`` output."""
     if not raw:
-        return networks
+        return []
 
-    lines = raw.splitlines()
-    if len(lines) < 2:
-        return networks
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return []
 
-    # Try terse format first (nmcli -t -f ...)
-    for line in lines:
-        parts = line.split(":")
-        if len(parts) >= 8:
-            net = _parse_nmcli_terse_line(parts)
-            if net:
-                networks.append(net)
+    networks = [_parse_nmcli_terse_line(_split_nmcli_terse(line)) for line in lines]
+    parsed = [network for network in networks if network]
+    if parsed:
+        return parsed
 
-    if networks:
-        return networks
-
-    # Fall back: try to parse columnar format
     return _parse_nmcli_columnar(lines)
 
 
-def _parse_nmcli_terse_line(parts: list[str]) -> Optional[dict]:
-    """Parse a single terse nmcli line (colon-separated).
+def _split_nmcli_terse(line: str) -> list[str]:
+    """Split nmcli terse output while honoring backslash-escaped colons."""
+    parts: list[str] = []
+    buffer: list[str] = []
+    escaped = False
 
-    Expected field order for `nmcli -t -f IN-USE,BSSID,SSID,MODE,CHAN,FREQ,
-    RATE,SIGNAL,BARS,SECURITY dev wifi list`:
+    for char in line:
+        if escaped:
+            buffer.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            parts.append("".join(buffer))
+            buffer = []
+        else:
+            buffer.append(char)
 
-        IN-USE:BSSID:SSID:MODE:CHAN:FREQ:RATE:SIGNAL:BARS:SECURITY
+    if escaped:
+        buffer.append("\\")
+    parts.append("".join(buffer))
+    return parts
+
+
+def _parse_nmcli_terse_line(parts: list[str]) -> dict | None:
+    """Parse one terse nmcli row.
+
+    Expected order:
+    IN-USE:BSSID:SSID:MODE:CHAN:FREQ:RATE:SIGNAL:BARS:SECURITY
     """
-    try:
-        net = _empty_network()
-        # parts[1] = BSSID, parts[2] = SSID, parts[4] = CHAN, parts[7] = SIGNAL
-        # parts[9] = SECURITY
-        bssid = parts[1].replace("\\:", ":").strip()
-        if bssid:
-            net["bssid"] = normalise_bssid(bssid)
-
-        ssid = sanitise_ssid(parts[2]) if len(parts) > 2 else ""
-        net["ssid"]   = ssid if ssid else "<hidden>"
-        net["hidden"] = not bool(ssid)
-
-        if len(parts) > 4:
-            try:
-                net["channel"] = int(parts[4])
-            except ValueError:
-                pass
-
-        if len(parts) > 7:
-            try:
-                # nmcli SIGNAL is 0-100; convert roughly to dBm
-                sig_pct = int(parts[7])
-                net["signal"] = _percent_to_dbm(sig_pct)
-            except ValueError:
-                pass
-
-        if len(parts) > 9:
-            net["encryption"] = _derive_encryption_nmcli(parts[9])
-
-        return net
-    except (IndexError, ValueError) as exc:
-        logger.debug("Failed to parse nmcli terse line: %s", exc)
+    if len(parts) < 10:
         return None
+
+    net = _empty_network()
+    bssid = parts[1].strip()
+    if not re.fullmatch(BSSID_RE, bssid):
+        return None
+
+    net["bssid"] = normalise_bssid(bssid)
+    ssid = sanitise_ssid(parts[2])
+    net["ssid"] = ssid if ssid else "<hidden>"
+    net["hidden"] = not bool(ssid)
+    net["channel"] = _parse_int(parts[4], default=0)
+    net["frequency"] = _parse_frequency_ghz(parts[5])
+    net["signal"] = _percent_to_dbm(_parse_int(parts[7], default=0))
+    net["encryption"] = _derive_encryption_nmcli(parts[9])
+    return net
 
 
 def _parse_nmcli_columnar(lines: list[str]) -> list[dict]:
-    """Fallback columnar parser for nmcli output.
-
-    Args:
-        lines: All stdout lines from nmcli.
-
-    Returns:
-        List of network dicts.
-    """
-    networks = []
+    """Fallback parser for fixed-width nmcli output."""
     header = lines[0].lower()
-    col_ssid    = _col_offset(header, "ssid")
-    col_bssid   = _col_offset(header, "bssid")
-    col_signal  = _col_offset(header, "signal")
-    col_chan    = _col_offset(header, "chan")
-    col_sec     = _col_offset(header, "security")
+    offsets = {
+        "ssid": _col_offset(header, "ssid"),
+        "bssid": _col_offset(header, "bssid"),
+        "signal": _col_offset(header, "signal"),
+        "chan": _col_offset(header, "chan"),
+        "security": _col_offset(header, "security"),
+    }
+    if any(value < 0 for value in offsets.values()):
+        return []
 
+    networks: list[dict] = []
     for line in lines[1:]:
-        if not line.strip():
-            continue
         net = _empty_network()
-        net["ssid"]       = sanitise_ssid(_col_value(line, col_ssid, col_bssid)) or "<hidden>"
-        net["hidden"]     = net["ssid"] == "<hidden>"
-        bssid_raw         = _col_value(line, col_bssid, col_signal)
-        net["bssid"]      = normalise_bssid(bssid_raw) if bssid_raw.strip() else net["bssid"]
-        sig_raw           = _col_value(line, col_signal, col_chan).strip()
-        net["signal"]     = _percent_to_dbm(int(sig_raw)) if sig_raw.isdigit() else -100
-        chan_raw          = _col_value(line, col_chan, col_sec).strip()
-        net["channel"]    = int(chan_raw) if chan_raw.isdigit() else 0
-        sec_raw           = line[col_sec:].strip() if col_sec else ""
-        net["encryption"] = _derive_encryption_nmcli(sec_raw)
+        ssid = sanitise_ssid(_col_value(line, offsets, "ssid"))
+        net["ssid"] = ssid if ssid else "<hidden>"
+        net["hidden"] = not bool(ssid)
+
+        bssid = _col_value(line, offsets, "bssid")
+        if re.fullmatch(BSSID_RE, bssid):
+            net["bssid"] = normalise_bssid(bssid)
+        else:
+            continue
+
+        net["signal"] = _percent_to_dbm(_parse_int(_col_value(line, offsets, "signal"), default=0))
+        net["channel"] = _parse_int(_col_value(line, offsets, "chan"), default=0)
+        net["encryption"] = _derive_encryption_nmcli(_col_value(line, offsets, "security"))
         networks.append(net)
 
     return networks
 
 
-def _col_offset(header: str, name: str) -> int:
-    """Return the character offset of a column name in a header string."""
-    idx = header.find(name)
-    return idx if idx >= 0 else 0
-
-
-def _col_value(line: str, start: int, end: int) -> str:
-    """Slice a fixed-width column value from a line."""
-    return line[start:end].strip() if end > start else line[start:].strip()
-
-
 def _derive_encryption_nmcli(security_field: str) -> str:
-    """Map nmcli SECURITY field to a normalised encryption label.
-
-    Args:
-        security_field: Raw security string from nmcli (e.g. "WPA2 802.1X").
-
-    Returns:
-        Encryption label.
-    """
-    s = security_field.upper()
-    if not s or s in ("--", "NONE", ""):
+    """Map nmcli SECURITY text to a normalised encryption label."""
+    security = security_field.upper().strip()
+    if not security or security in {"--", "NONE"}:
         return "OPEN"
-    if "WPA3" in s or "SAE" in s:
+    if "WPA3" in security or "SAE" in security or "OWE" in security:
         return "WPA3"
-    if "WPA2" in s:
+    if "WPA2" in security:
         return "WPA2"
-    if "WPA" in s:
+    if "WPA" in security:
         return "WPA"
-    if "WEP" in s:
+    if "WEP" in security:
         return "WEP"
     return "UNKNOWN"
 
 
 def _percent_to_dbm(pct: int) -> int:
-    """Convert a 0-100 signal quality percentage to an approximate dBm value.
-
-    Formula: dBm ≈ (pct / 2) - 100
-    """
+    """Convert a 0-100 signal quality percentage to approximate dBm."""
     return int((max(0, min(100, pct)) / 2) - 100)
+
+
+def _capability_lines(block: str) -> list[str]:
+    keywords = ("rsn", "wpa", "privacy", "wps", "capability", "encryption key")
+    return [line.strip() for line in block.splitlines() if any(key in line.lower() for key in keywords)]
+
+
+def _parse_int(value: str, *, default: int) -> int:
+    match = re.search(r"-?\d+", value)
+    return int(match.group(0)) if match else default
+
+
+def _parse_frequency_ghz(value: str) -> float:
+    match = re.search(r"\d+(?:\.\d+)?", value)
+    if not match:
+        return 0.0
+    number = float(match.group(0))
+    return round(number / 1000, 3) if number > 100 else round(number, 3)
+
+
+def _col_offset(header: str, name: str) -> int:
+    index = header.find(name)
+    return index if index >= 0 else -1
+
+
+def _col_value(line: str, offsets: dict[str, int], name: str) -> str:
+    start = offsets[name]
+    later_offsets = [offset for key, offset in offsets.items() if key != name and offset > start]
+    end = min(later_offsets) if later_offsets else len(line)
+    return line[start:end].strip()

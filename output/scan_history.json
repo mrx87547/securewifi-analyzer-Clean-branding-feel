@@ -1,7 +1,8 @@
 [
   {
-    "timestamp": "2026-05-02 21:22:26",
+    "timestamp": "2026-05-06 17:28:15",
     "interface": "wlan0",
+    "demo_mode": true,
     "networks": 8,
     "critical": 0,
     "vulnerable": 4,

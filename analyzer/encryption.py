@@ -1,187 +1,141 @@
 """
-analyzer/encryption.py
-Analyses the encryption configuration of each scanned network and maps it
-to a structured finding with risk level and educational recommendations.
+Encryption posture analysis.
 """
 
+from __future__ import annotations
+
 import logging
+
 from config.settings import ENCRYPTION_SCORES
 
 logger = logging.getLogger(__name__)
 
-
-# ── Encryption Finding Templates ──────────────────────────────────────────────
-
 _ENCRYPTION_FINDINGS: dict[str, dict] = {
     "OPEN": {
-        "vulnerability":               "Open / Unencrypted Network",
-        "risk_level":                  "Critical",
+        "vulnerability": "Open / Unencrypted Network",
+        "risk_level": "Critical",
         "description": (
-            "The network broadcasts without any encryption or authentication. "
-            "All data transmitted over this network is sent in plain-text and "
-            "can be captured by anyone within radio range."
+            "The network broadcasts without encryption or authentication. Traffic can "
+            "be captured or modified by anyone within radio range."
         ),
         "unauthorized_access_scenario": (
-            "Any device within wireless range can associate with this AP without "
-            "providing credentials.  An attacker could passively capture all "
-            "traffic (HTTP requests, DNS queries, unencrypted emails) using a "
-            "standard packet-capture tool, or perform a man-in-the-middle (MitM) "
-            "attack to intercept or modify data in transit."
+            "A nearby attacker can join the AP without credentials and observe DNS, "
+            "HTTP, and other clear-text traffic. They may also attempt man-in-the-middle "
+            "attacks against connected clients."
         ),
         "recommendation": (
-            "Enable WPA3 Personal encryption immediately.  If WPA3 is not supported "
-            "by the access point, use WPA2-AES.  Never transmit sensitive information "
-            "over an open network — use a VPN when on public hotspots."
+            "Enable WPA3 Personal. If unsupported, use WPA2-AES with a strong random "
+            "passphrase. Avoid transmitting sensitive data on open hotspots without a VPN."
         ),
     },
     "WEP": {
-        "vulnerability":               "WEP Encryption (Broken Protocol)",
-        "risk_level":                  "Critical",
+        "vulnerability": "WEP Encryption (Broken Protocol)",
+        "risk_level": "Critical",
         "description": (
-            "WEP (Wired Equivalent Privacy) was deprecated in 2004 and is "
-            "cryptographically broken.  Its RC4 key-stream can be fully "
-            "recovered by statistical analysis of a few thousand captured frames."
+            "WEP was deprecated in 2004 and is cryptographically broken. Its RC4-based "
+            "design allows key recovery from captured traffic."
         ),
         "unauthorized_access_scenario": (
-            "An attacker can capture WEP-encrypted frames passively and use "
-            "publicly available statistical attacks to recover the WEP key.  "
-            "The time to crack a 64-bit or 128-bit WEP key is typically "
-            "under one minute once sufficient IVs are collected, after which "
-            "the attacker gains full network access as if they knew the password."
+            "An attacker can passively capture enough WEP frames and recover the network "
+            "key with public tooling, then access the network as an authenticated client."
         ),
         "recommendation": (
-            "Replace WEP with WPA3 immediately.  Any device so old that it only "
-            "supports WEP should be retired.  Do not store or transmit any "
-            "sensitive data on WEP-protected networks."
+            "Replace WEP with WPA3 immediately. Retire devices that only support WEP and "
+            "avoid sending sensitive data over this network."
         ),
     },
     "WPA": {
-        "vulnerability":               "WPA-TKIP (Deprecated Protocol)",
-        "risk_level":                  "High",
+        "vulnerability": "WPA-TKIP (Deprecated Protocol)",
+        "risk_level": "High",
         "description": (
-            "WPA with TKIP (Temporal Key Integrity Protocol) was introduced as a "
-            "patch for WEP and shares several of its weaknesses.  TKIP has been "
-            "deprecated since 2012 (IEEE 802.11-2012) and is no longer considered "
-            "secure for protecting sensitive data."
+            "WPA-TKIP was a transitional replacement for WEP and is deprecated. It does "
+            "not meet modern wireless security requirements."
         ),
         "unauthorized_access_scenario": (
-            "While a full WPA-TKIP key recovery requires more frames than WEP, "
-            "practical attacks such as the Beck–Tews and Ohigashi–Morii attacks "
-            "can forge short packets and, in some configurations, recover the MIC "
-            "key.  Dictionary and rule-based attacks against the WPA handshake "
-            "remain highly effective if the passphrase is weak."
+            "Attackers may exploit protocol weaknesses or capture authentication handshakes "
+            "for offline password guessing, especially when passphrases are weak or reused."
         ),
         "recommendation": (
-            "Upgrade to WPA3 Personal (or at minimum WPA2-AES).  Disable TKIP "
-            "and WPA on the access point settings panel.  Ensure the passphrase "
-            "is at least 12 characters with mixed case, digits, and symbols."
+            "Disable WPA and TKIP. Use WPA3 Personal or WPA2-AES with a long random passphrase and current AP firmware."
         ),
     },
     "WPA2": {
-        "vulnerability":               "WPA2-PSK (Moderate Risk — Passphrase Dependent)",
-        "risk_level":                  "Moderate",
+        "vulnerability": "WPA2-PSK (Passphrase Dependent)",
+        "risk_level": "Moderate",
         "description": (
-            "WPA2 with AES-CCMP is currently the most widely deployed wireless "
-            "security standard and is considered secure when a strong passphrase "
-            "is used.  However, the 4-way handshake can be captured and subjected "
-            "to offline dictionary or brute-force attacks."
+            "WPA2-AES is broadly secure when paired with a strong passphrase, but captured "
+            "handshakes can be attacked offline if passwords are weak."
         ),
         "unauthorized_access_scenario": (
-            "An attacker who captures a WPA2 4-way authentication handshake "
-            "(which is broadcast in the clear during association) can run it "
-            "against wordlists or GPU-accelerated brute-force tools offline, "
-            "with no further interaction with the AP.  Common or default passphrases "
-            "are typically found within seconds to minutes.  WPS PIN mode (if enabled) "
-            "additionally reduces the effective key-space to ~11,000 guesses."
+            "An attacker who captures a 4-way handshake can run offline dictionary attacks. "
+            "WPS, default passwords, and short passphrases greatly increase compromise risk."
         ),
         "recommendation": (
-            "Use a passphrase of at least 16 random characters.  Disable WPS. "
-            "Consider upgrading to WPA3 which is resistant to offline dictionary "
-            "attacks through Simultaneous Authentication of Equals (SAE).  "
-            "Enable Management Frame Protection (802.11w)."
+            "Use at least 16 random characters, disable WPS, enable Management Frame "
+            "Protection where supported, and plan a WPA3 upgrade."
         ),
     },
     "WPA3": {
-        "vulnerability":               "WPA3 (Secure Configuration Detected)",
-        "risk_level":                  "Low",
+        "vulnerability": "WPA3 (Secure Configuration Detected)",
+        "risk_level": "Low",
         "description": (
-            "WPA3 uses Simultaneous Authentication of Equals (SAE) to provide "
-            "forward secrecy and resistance to offline dictionary attacks.  "
-            "This is the current best-practice for wireless security."
+            "WPA3 uses SAE to resist offline dictionary attacks and is the current best "
+            "practice for personal wireless networks."
         ),
         "unauthorized_access_scenario": (
-            "WPA3 SAE prevents offline dictionary attacks because each connection "
-            "attempt requires real-time interaction with the AP, making large-scale "
-            "brute-force impractical.  Side-channel attacks against early WPA3 "
-            "implementations (Dragonblood, 2019) have been patched in modern firmware."
+            "WPA3 materially raises attack cost, but outdated firmware or transition mode "
+            "can still expose downgrade or implementation risks."
         ),
         "recommendation": (
-            "Keep AP firmware up to date.  Ensure SAE-only mode is selected "
-            "(not WPA3-Transition which also allows WPA2).  Enable Management "
-            "Frame Protection (802.11w) in required mode."
+            "Keep AP firmware current, prefer WPA3-only mode where compatible, and require Management Frame Protection."
         ),
     },
     "UNKNOWN": {
-        "vulnerability":               "Unidentified Encryption",
-        "risk_level":                  "Medium",
-        "description": (
-            "The encryption type could not be determined from available scan data. "
-            "This may indicate a non-standard configuration or tool limitation."
-        ),
+        "vulnerability": "Unidentified Encryption",
+        "risk_level": "Medium",
+        "description": ("The scanner could not determine the network's encryption from available data."),
         "unauthorized_access_scenario": (
-            "Without knowing the encryption type it is impossible to assess the "
-            "exact risk.  Treat unknown encryption networks with caution."
+            "Unknown security posture prevents reliable risk assessment and may indicate a "
+            "non-standard or unsupported configuration."
         ),
         "recommendation": (
-            "Manually inspect the access point's admin panel to confirm the "
-            "encryption standard and update firmware if needed."
+            "Manually verify AP security settings, update firmware, and confirm WPA2-AES or WPA3 is enforced."
         ),
     },
 }
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def analyse_encryption(network: dict) -> dict:
-    """Build an encryption analysis finding for a single network.
-
-    Args:
-        network: Normalised network dict from the scanner.
-
-    Returns:
-        Dict containing vulnerability details, risk level, scenario, and
-        recommendation, plus a numeric penalty score (0–100).
-    """
-    enc = network.get("encryption", "UNKNOWN").upper()
-    template = _ENCRYPTION_FINDINGS.get(enc, _ENCRYPTION_FINDINGS["UNKNOWN"])
+    """Build an encryption analysis finding for one network."""
+    encryption = str(network.get("encryption", "UNKNOWN")).upper()
+    template = _ENCRYPTION_FINDINGS.get(encryption, _ENCRYPTION_FINDINGS["UNKNOWN"])
 
     finding = {
-        "category":                    "Encryption",
-        "encryption_type":             enc,
-        "vulnerability":               template["vulnerability"],
-        "risk_level":                  template["risk_level"],
-        "description":                 template["description"],
+        "category": "Encryption",
+        "encryption_type": encryption,
+        "vulnerability": template["vulnerability"],
+        "risk_level": template["risk_level"],
+        "description": template["description"],
         "unauthorized_access_scenario": template["unauthorized_access_scenario"],
-        "recommendation":              template["recommendation"],
-        "penalty_score":               ENCRYPTION_SCORES.get(enc, 60),
-        "wps_enabled":                 network.get("wps", False),
+        "recommendation": template["recommendation"],
+        "penalty_score": ENCRYPTION_SCORES.get(encryption, 60),
+        "wps_enabled": bool(network.get("wps", False)),
     }
 
-    # WPS adds additional risk to WPA/WPA2 networks
-    if finding["wps_enabled"] and enc in ("WPA", "WPA2"):
+    if finding["wps_enabled"] and encryption in {"WPA", "WPA2"}:
         finding["wps_warning"] = (
-            "WPS (Wi-Fi Protected Setup) is enabled.  The WPS PIN attack reduces "
-            "the effective authentication key-space from billions of possibilities "
-            "to approximately 11,000 guesses, allowing an attacker to recover "
-            "the network password in hours without a GPU."
+            "WPS is enabled. PIN mode drastically reduces authentication search space "
+            "and should be disabled on production networks."
         )
-        # Increase penalty slightly
-        finding["penalty_score"] = min(100, finding["penalty_score"] + 10)
+        finding["penalty_score"] = min(100, int(finding["penalty_score"]) + 10)
 
     logger.debug(
-        "Encryption analysis for %s: %s → penalty=%d",
-        network.get("ssid"),
-        enc,
-        finding["penalty_score"],
+        "Encryption analysis completed",
+        extra={
+            "event": "encryption_analysed",
+            "bssid": network.get("bssid", ""),
+            "encryption": encryption,
+            "penalty": finding["penalty_score"],
+        },
     )
     return finding

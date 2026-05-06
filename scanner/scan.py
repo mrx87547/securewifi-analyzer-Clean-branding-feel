@@ -1,135 +1,134 @@
 """
-scanner/scan.py
-Executes Linux wireless scan commands (iw / iwlist / nmcli) and returns
-parsed network lists.  Falls back gracefully when tools are unavailable.
+Wireless scan orchestration.
+
+The scanner executes trusted Linux wireless tools with argv-only subprocess
+calls, validates user-controlled interface names, and never fabricates live scan
+results unless demo mode is explicitly requested.
 """
+
+from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
-from utils.helpers import run_command, check_tool, check_root
-from scanner.parser import parse_iw_scan, parse_iwlist_scan, parse_nmcli_scan
 from config.settings import DEFAULT_SCAN_TIMEOUT
+from scanner.parser import parse_iw_scan, parse_iwlist_scan, parse_nmcli_scan
+from utils.helpers import (
+    check_root,
+    check_tool,
+    run_command,
+    validate_interface_name,
+    validate_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def scan_networks(
     interface: str = "wlan0",
     timeout: int = DEFAULT_SCAN_TIMEOUT,
+    *,
+    demo_mode: bool = False,
 ) -> list[dict]:
     """Scan for nearby WiFi networks using the best available tool.
 
-    Tries tools in order: iw → iwlist → nmcli.
-    If none succeeds, returns a demo dataset for offline testing.
-
-    Args:
-        interface: Wireless interface name (e.g. "wlan0").
-        timeout:   Maximum seconds to wait for a scan.
-
-    Returns:
-        List of normalised network dicts.
+    Tries tools in order: ``iw``, ``iwlist``, then ``nmcli``. If no tool can
+    produce results, an empty list is returned. Demo data is returned only when
+    ``demo_mode`` is explicitly enabled by the caller.
     """
-    logger.info("Starting WiFi scan on interface: %s", interface)
+    safe_interface = validate_interface_name(interface)
+    safe_timeout = validate_timeout(timeout)
 
-    # ── Try iw ────────────────────────────────────────────────────────────────
+    logger.info(
+        "Starting WiFi scan",
+        extra={
+            "event": "scan_started",
+            "interface": safe_interface,
+            "timeout": safe_timeout,
+            "demo_mode": demo_mode,
+        },
+    )
+
+    if demo_mode:
+        logger.warning("Using explicit demo dataset", extra={"event": "scan_demo_mode"})
+        return _deduplicate(_demo_networks())
+
+    attempts: list[tuple[str, list[dict]]] = []
+
     if check_tool("iw"):
-        networks = _scan_with_iw(interface, timeout)
+        networks = _scan_with_iw(safe_interface, safe_timeout)
+        attempts.append(("iw", networks))
         if networks:
-            logger.info("iw scan returned %d networks", len(networks))
-            return _deduplicate(networks)
+            return _finalise_scan("iw", networks)
 
-    # ── Try iwlist ────────────────────────────────────────────────────────────
     if check_tool("iwlist"):
-        networks = _scan_with_iwlist(interface, timeout)
+        networks = _scan_with_iwlist(safe_interface, safe_timeout)
+        attempts.append(("iwlist", networks))
         if networks:
-            logger.info("iwlist scan returned %d networks", len(networks))
-            return _deduplicate(networks)
+            return _finalise_scan("iwlist", networks)
 
-    # ── Try nmcli ─────────────────────────────────────────────────────────────
     if check_tool("nmcli"):
-        networks = _scan_with_nmcli(interface, timeout)
+        networks = _scan_with_nmcli(safe_interface, safe_timeout)
+        attempts.append(("nmcli", networks))
         if networks:
-            logger.info("nmcli scan returned %d networks", len(networks))
-            return _deduplicate(networks)
+            return _finalise_scan("nmcli", networks)
 
-    # ── Offline / demo fallback ────────────────────────────────────────────────
-    logger.warning("No scan tools produced results; using demo dataset.")
-    return _demo_networks()
+    logger.error(
+        "No wireless scan tool produced results",
+        extra={
+            "event": "scan_no_results",
+            "interface": safe_interface,
+            "attempts": [{"tool": tool, "count": len(rows)} for tool, rows in attempts],
+        },
+    )
+    return []
 
-
-# ── iw ────────────────────────────────────────────────────────────────────────
 
 def _scan_with_iw(interface: str, timeout: int) -> list[dict]:
-    """Run `iw dev <iface> scan` and parse results.
-
-    Args:
-        interface: Wireless interface.
-        timeout:   Command timeout in seconds.
-
-    Returns:
-        Parsed network list, possibly empty.
-    """
+    """Run ``iw dev <iface> scan`` and parse results."""
     if not check_root():
-        logger.warning("iw scan requires root privileges; attempting anyway.")
+        logger.warning(
+            "iw scans usually require root privileges",
+            extra={"event": "scan_privilege_warning", "tool": "iw", "interface": interface},
+        )
 
-    # Trigger a fresh scan
     raw = run_command(["iw", "dev", interface, "scan"], timeout=timeout, capture_stderr=True)
     if not raw:
-        # Some drivers need an explicit link-up first
-        run_command(["ip", "link", "set", interface, "up"], timeout=5)
-        time.sleep(1)
-        raw = run_command(["iw", "dev", interface, "scan"], timeout=timeout, capture_stderr=True)
-
-    if not raw:
-        logger.debug("iw scan produced no output for %s", interface)
+        logger.debug("iw scan produced no parseable output", extra={"event": "scan_empty", "tool": "iw"})
         return []
-
     return parse_iw_scan(raw)
 
 
-# ── iwlist ────────────────────────────────────────────────────────────────────
-
 def _scan_with_iwlist(interface: str, timeout: int) -> list[dict]:
-    """Run `iwlist <iface> scanning` and parse results.
-
-    Args:
-        interface: Wireless interface.
-        timeout:   Command timeout in seconds.
-
-    Returns:
-        Parsed network list, possibly empty.
-    """
+    """Run ``iwlist <iface> scanning`` and parse results."""
     raw = run_command(["iwlist", interface, "scanning"], timeout=timeout, capture_stderr=True)
     if not raw or "No scan results" in raw:
-        logger.debug("iwlist returned no results for %s", interface)
+        logger.debug(
+            "iwlist returned no results",
+            extra={"event": "scan_empty", "tool": "iwlist", "interface": interface},
+        )
         return []
     return parse_iwlist_scan(raw)
 
 
-# ── nmcli ─────────────────────────────────────────────────────────────────────
-
 def _scan_with_nmcli(interface: str, timeout: int) -> list[dict]:
-    """Run `nmcli device wifi rescan` then `nmcli -t dev wifi list`.
-
-    Args:
-        interface: Wireless interface.
-        timeout:   Command timeout in seconds.
-
-    Returns:
-        Parsed network list, possibly empty.
-    """
-    # Trigger rescan (ignore errors)
-    run_command(["nmcli", "device", "wifi", "rescan", "ifname", interface], timeout=10)
-    time.sleep(2)
-
+    """Run ``nmcli device wifi list`` and parse terse output."""
     raw = run_command(
-        ["nmcli", "-t", "-f",
-         "IN-USE,BSSID,SSID,MODE,CHAN,FREQ,RATE,SIGNAL,BARS,SECURITY",
-         "dev", "wifi", "list"],
+        [
+            "nmcli",
+            "-t",
+            "--escape",
+            "yes",
+            "-f",
+            "IN-USE,BSSID,SSID,MODE,CHAN,FREQ,RATE,SIGNAL,BARS,SECURITY",
+            "device",
+            "wifi",
+            "list",
+            "ifname",
+            interface,
+            "--rescan",
+            "yes",
+        ],
         timeout=timeout,
     )
     if not raw:
@@ -137,33 +136,41 @@ def _scan_with_nmcli(interface: str, timeout: int) -> list[dict]:
     return parse_nmcli_scan(raw)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def _finalise_scan(tool: str, networks: list[dict]) -> list[dict]:
+    deduped = _deduplicate(networks)
+    logger.info(
+        "Wireless scan completed",
+        extra={"event": "scan_completed", "tool": tool, "network_count": len(deduped)},
+    )
+    return deduped
+
 
 def _deduplicate(networks: list[dict]) -> list[dict]:
-    """Remove duplicate BSSIDs, keeping the strongest signal.
-
-    Args:
-        networks: Raw list of network dicts.
-
-    Returns:
-        De-duplicated list ordered by signal strength (strongest first).
-    """
+    """Remove duplicate BSSIDs, keeping the strongest signal."""
     best: dict[str, dict] = {}
-    for net in networks:
-        bssid = net["bssid"]
-        if bssid not in best or net["signal"] > best[bssid]["signal"]:
-            best[bssid] = net
-    return sorted(best.values(), key=lambda n: n["signal"], reverse=True)
+    for network in networks:
+        bssid = str(network.get("bssid", "")).upper()
+        if not bssid or bssid == "00:00:00:00:00:00":
+            continue
+
+        signal = _safe_signal(network.get("signal", -100))
+        network["signal"] = signal
+        if bssid not in best or signal > _safe_signal(best[bssid].get("signal", -100)):
+            best[bssid] = network
+
+    return sorted(best.values(), key=lambda item: _safe_signal(item.get("signal", -100)), reverse=True)
 
 
-# ── Demo Dataset ──────────────────────────────────────────────────────────────
+def _safe_signal(value: object) -> int:
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return -100
+
 
 def _demo_networks() -> list[dict]:
-    """Return a realistic demo dataset for testing without a wireless adapter.
-
-    Returns:
-        Hardcoded list of network dicts covering all encryption types.
-    """
+    """Return a realistic demo dataset for tests and offline demonstrations."""
+    time.sleep(0.05)
     return [
         {
             "ssid": "CoffeeShop_Free",
@@ -238,7 +245,7 @@ def _demo_networks() -> list[dict]:
             "raw_caps": [],
         },
         {
-            "ssid": "CoffeeShop_Free",   # Duplicate SSID — potential rogue AP
+            "ssid": "CoffeeShop_Free",
             "bssid": "FF:EE:DD:33:22:11",
             "signal": -50,
             "channel": 6,

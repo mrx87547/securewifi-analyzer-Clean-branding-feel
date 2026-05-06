@@ -1,32 +1,19 @@
 """
-analyzer/vulnerabilities.py
-Detects configuration-based vulnerabilities: default SSIDs, hidden networks,
-signal leakage, WPS exposure, and weak naming conventions.
+Configuration vulnerability checks.
 """
 
+from __future__ import annotations
+
 import logging
-from config.settings import (
-    DEFAULT_SSID_PREFIXES,
-    SIGNAL_STRONG_THRESHOLD,
-    SIGNAL_WEAK_THRESHOLD,
-)
+
+from config.settings import DEFAULT_SSID_PREFIXES, SIGNAL_STRONG_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def analyse_configuration(network: dict) -> list[dict]:
-    """Run all configuration checks against a single network.
-
-    Args:
-        network: Normalised network dict from the scanner.
-
-    Returns:
-        List of vulnerability finding dicts (may be empty if network is clean).
-    """
+    """Run configuration checks against a single network."""
     findings: list[dict] = []
-
     findings.extend(_check_default_ssid(network))
     findings.extend(_check_hidden_ssid(network))
     findings.extend(_check_signal_leakage(network))
@@ -34,57 +21,43 @@ def analyse_configuration(network: dict) -> list[dict]:
     findings.extend(_check_weak_channel(network))
 
     logger.debug(
-        "Configuration analysis for '%s': %d finding(s)",
-        network.get("ssid"),
-        len(findings),
+        "Configuration analysis completed",
+        extra={
+            "event": "configuration_analysed",
+            "bssid": network.get("bssid", ""),
+            "finding_count": len(findings),
+        },
     )
     return findings
 
 
-# ── Individual Checks ─────────────────────────────────────────────────────────
-
 def _check_default_ssid(network: dict) -> list[dict]:
-    """Flag networks broadcasting a vendor-default or generic SSID.
-
-    Args:
-        network: Network dict.
-
-    Returns:
-        List with one finding if the SSID matches a default prefix, else [].
-    """
-    ssid = network.get("ssid", "").lower()
-    if ssid in ("<hidden>", ""):
+    ssid = str(network.get("ssid", "")).lower()
+    if ssid in {"<hidden>", ""}:
         return []
 
-    matched_prefix = next(
-        (pfx for pfx in DEFAULT_SSID_PREFIXES if ssid.startswith(pfx)),
-        None,
-    )
+    matched_prefix = next((prefix for prefix in DEFAULT_SSID_PREFIXES if ssid.startswith(prefix)), None)
     if not matched_prefix:
         return []
 
+    display_ssid = network.get("ssid", "")
     return [
         {
-            "category":    "Configuration",
-            "check":       "Default / Vendor SSID",
-            "risk_level":  "High",
+            "category": "Configuration",
+            "check": "Default / Vendor SSID",
+            "risk_level": "High",
             "description": (
-                f"The SSID '{network['ssid']}' matches the default naming convention "
-                f"for vendor equipment (prefix: '{matched_prefix}').  Default SSIDs "
-                f"indicate the router may still be using factory-default credentials."
+                f"The SSID '{display_ssid}' matches a vendor or generic default naming "
+                f"pattern (prefix: '{matched_prefix}'). Default naming can reveal device "
+                "type and may indicate other factory defaults remain unchanged."
             ),
             "unauthorized_access_scenario": (
-                "When a router retains its default SSID, it frequently also retains "
-                "its default admin password.  An attacker can look up the default "
-                "credentials for the identified vendor online and attempt to log in "
-                "to the router's web admin panel, potentially gaining full network "
-                "control: port-forwarding changes, DNS hijacking, and disabling "
-                "firewall rules."
+                "An attacker can infer router vendor or model family, look up common "
+                "default credentials, and attempt administrative access against the AP."
             ),
             "recommendation": (
-                "Change the SSID to a unique name that does not reveal the router "
-                "model or vendor.  Immediately change the admin password to a strong, "
-                "unique value.  Update the router firmware."
+                "Use a unique SSID that does not reveal vendor or model details. Change "
+                "the router admin password and keep firmware updated."
             ),
             "penalty_score": 30,
         }
@@ -92,43 +65,23 @@ def _check_default_ssid(network: dict) -> list[dict]:
 
 
 def _check_hidden_ssid(network: dict) -> list[dict]:
-    """Flag networks that suppress their SSID broadcast.
-
-    Hidden SSIDs provide a false sense of security — they are trivially
-    revealed when any client connects.
-
-    Args:
-        network: Network dict.
-
-    Returns:
-        List with one finding if SSID is hidden, else [].
-    """
     if not network.get("hidden", False):
         return []
 
     return [
         {
-            "category":    "Configuration",
-            "check":       "Hidden SSID",
-            "risk_level":  "Low",
+            "category": "Configuration",
+            "check": "Hidden SSID",
+            "risk_level": "Low",
             "description": (
-                "The network is configured to suppress its SSID in beacon frames "
-                "(hidden network).  This is a security-through-obscurity measure "
-                "that provides minimal practical protection."
+                "The network suppresses its SSID in beacon frames. This offers little "
+                "practical protection and can increase client probing privacy leakage."
             ),
             "unauthorized_access_scenario": (
-                "Passive wireless scanners can detect hidden networks from beacon "
-                "frames even without an SSID.  When a legitimate client connects, "
-                "the SSID is transmitted in the probe request in plain-text, "
-                "instantly revealing it to any passive observer.  The hidden SSID "
-                "can also cause connected clients to broadcast probe requests for "
-                "the network everywhere they go, leaking the SSID even when away "
-                "from home."
+                "A passive observer can still identify the hidden network when clients connect or probe for it."
             ),
             "recommendation": (
-                "Do not rely on SSID hiding as a security control.  Instead, use "
-                "strong encryption (WPA3), a unique passphrase, and optionally "
-                "MAC-address filtering as a secondary (not primary) control."
+                "Do not rely on hidden SSIDs as a security control. Use WPA3 or WPA2-AES with a strong passphrase."
             ),
             "penalty_score": 10,
         }
@@ -136,39 +89,27 @@ def _check_hidden_ssid(network: dict) -> list[dict]:
 
 
 def _check_signal_leakage(network: dict) -> list[dict]:
-    """Flag networks with an unusually strong signal that may extend beyond intended premises.
-
-    Args:
-        network: Network dict.
-
-    Returns:
-        List with one finding if signal exceeds threshold, else [].
-    """
-    rssi = network.get("signal", -100)
+    rssi = _safe_int(network.get("signal", -100), -100)
     if rssi < SIGNAL_STRONG_THRESHOLD:
         return []
 
     return [
         {
-            "category":    "Signal / RF",
-            "check":       "Excessive Signal Strength",
-            "risk_level":  "Medium",
+            "category": "Signal / RF",
+            "check": "Excessive Signal Strength",
+            "risk_level": "Medium",
             "description": (
-                f"The detected signal strength is {rssi} dBm, which exceeds the "
-                f"'strong signal' threshold of {SIGNAL_STRONG_THRESHOLD} dBm.  "
-                f"This may indicate the transmit power is set too high, causing RF "
-                f"coverage to extend well beyond the intended premises."
+                f"The detected signal strength is {rssi} dBm, above the strong-signal "
+                f"threshold of {SIGNAL_STRONG_THRESHOLD} dBm. Coverage may extend beyond "
+                "the intended premises."
             ),
             "unauthorized_access_scenario": (
-                "A very strong signal means the network is reachable from car parks, "
-                "pavements, or neighbouring buildings.  This significantly increases "
-                "the pool of potential attackers who can attempt to authenticate "
-                "or capture traffic without needing to be inside the premises."
+                "A wider RF footprint increases the number of locations from which an "
+                "attacker can attempt authentication or capture traffic."
             ),
             "recommendation": (
-                "Reduce transmit power in the AP admin settings to limit coverage to "
-                "the intended area.  Conduct a site survey to verify the coverage "
-                "boundary.  Consider directional antennas to focus coverage inward."
+                "Reduce transmit power if appropriate and perform a site survey to verify "
+                "that coverage matches business needs."
             ),
             "penalty_score": 20,
         }
@@ -176,91 +117,64 @@ def _check_signal_leakage(network: dict) -> list[dict]:
 
 
 def _check_wps(network: dict) -> list[dict]:
-    """Flag networks with WPS enabled.
-
-    Args:
-        network: Network dict.
-
-    Returns:
-        List with one finding if WPS is enabled, else [].
-    """
     if not network.get("wps", False):
         return []
 
     return [
         {
-            "category":    "Configuration",
-            "check":       "WPS Enabled",
-            "risk_level":  "High",
+            "category": "Configuration",
+            "check": "WPS Enabled",
+            "risk_level": "High",
             "description": (
-                "Wi-Fi Protected Setup (WPS) is enabled on this access point.  "
-                "The WPS PIN method has a fundamental design flaw — the 8-digit PIN "
-                "is verified in two halves, reducing the effective key-space from "
-                "100,000,000 to approximately 11,000 attempts."
+                "Wi-Fi Protected Setup is enabled. WPS PIN mode has design weaknesses "
+                "that reduce the practical authentication search space."
             ),
             "unauthorized_access_scenario": (
-                "An attacker can use the Pixie Dust attack (offline WPS attack) or "
-                "a standard online PIN brute-force to recover the WPS PIN and "
-                "subsequently the WPA2 passphrase.  Even with rate-limiting, the "
-                "attack is usually feasible within hours.  Many ISP-provided routers "
-                "are known to have predictable PINs derivable from the BSSID."
+                "An attacker may attempt online WPS PIN guessing or exploit weak vendor "
+                "PIN generation to recover the wireless passphrase."
             ),
-            "recommendation": (
-                "Disable WPS in the router admin panel.  If the router does not "
-                "allow WPS to be disabled, replace it.  WPS-PBC (push-button) mode "
-                "is safer than PIN mode but still carries some risk."
-            ),
+            "recommendation": ("Disable WPS. Replace APs that do not allow WPS to be disabled."),
             "penalty_score": 25,
         }
     ]
 
 
 def _check_weak_channel(network: dict) -> list[dict]:
-    """Flag 2.4 GHz networks on highly congested channels (not 1, 6, or 11).
-
-    Congestion on non-standard channels indicates poor configuration; it does
-    not directly create a security vulnerability but is a quality signal.
-
-    Args:
-        network: Network dict.
-
-    Returns:
-        List with one finding if channel is non-optimal, else [].
-    """
-    channel = network.get("channel", 0)
-    freq    = network.get("frequency", 0.0)
-
-    # Only applies to 2.4 GHz band
-    if not (2.4 <= freq < 2.5):
+    channel = _safe_int(network.get("channel", 0), 0)
+    frequency = _safe_float(network.get("frequency", 0.0), 0.0)
+    if not (2.4 <= frequency < 2.5):
         return []
-
-    # Channels 1, 6, 11 are the standard non-overlapping channels
-    if channel in (0, 1, 6, 11):
+    if channel in {0, 1, 6, 11}:
         return []
 
     return [
         {
-            "category":    "Configuration",
-            "check":       "Non-Standard 2.4 GHz Channel",
-            "risk_level":  "Low",
+            "category": "Configuration",
+            "check": "Non-Standard 2.4 GHz Channel",
+            "risk_level": "Low",
             "description": (
                 f"The network is operating on channel {channel} in the 2.4 GHz band. "
-                f"Channels 1, 6, and 11 are the only non-overlapping choices; "
-                f"other channels overlap with neighbours, increasing interference "
-                f"and potentially reducing encryption reliability."
+                "Channels 1, 6, and 11 are the standard non-overlapping choices."
             ),
             "unauthorized_access_scenario": (
-                "Elevated RF interference can cause retransmissions that increase "
-                "the volume of capturable frames.  Some older implementations "
-                "exposed IVs (initialisation vectors) more frequently under "
-                "high-collision conditions — a historically important factor in "
-                "WEP attacks."
+                "Heavy interference can increase retransmissions and reduce wireless "
+                "reliability, which is a useful operational risk signal."
             ),
-            "recommendation": (
-                "Set the AP to use channels 1, 6, or 11 in the 2.4 GHz band, "
-                "or migrate to the 5 GHz / 6 GHz band which has many more "
-                "non-overlapping channels."
-            ),
+            "recommendation": ("Use channels 1, 6, or 11 on 2.4 GHz, or prefer 5 GHz / 6 GHz where available."),
             "penalty_score": 5,
         }
     ]
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default

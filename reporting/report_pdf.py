@@ -1,105 +1,85 @@
 """
-reporting/report_pdf.py
-Generates a professional PDF security assessment report using ReportLab.
-Falls back gracefully if ReportLab is not installed.
+PDF security assessment report generation.
 """
 
-import logging
-import os
-from datetime import datetime
-from typing import Optional
+from __future__ import annotations
 
-from utils.helpers import ensure_dir, unique_filename
-from config.settings import OUTPUT_DIR, TOOL_NAME, TOOL_VERSION, PDF_COMPANY_NAME
+import logging
+from datetime import datetime
+from html import escape as html_escape
+from pathlib import Path
+
+from config.settings import OUTPUT_DIR, PDF_COMPANY_NAME, TOOL_NAME, TOOL_VERSION
+from utils.helpers import ensure_dir, safe_console_text, unique_filename
 
 logger = logging.getLogger(__name__)
 
-# ── ReportLab Import (optional dependency) ────────────────────────────────────
 try:
     from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm, mm
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        HRFlowable, PageBreak, KeepTogether,
+        HRFlowable,
+        KeepTogether,
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
     )
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
     logger.warning("ReportLab not installed; PDF report generation is disabled.")
 
 
-# ── Colour palette ─────────────────────────────────────────────────────────────
 if REPORTLAB_AVAILABLE:
-    C_PRIMARY   = colors.HexColor("#1a1a2e")   # Dark navy
-    C_ACCENT    = colors.HexColor("#16213e")   # Darker navy
-    C_HIGHLIGHT = colors.HexColor("#0f3460")   # Medium navy
-    C_RED       = colors.HexColor("#e94560")   # Alert red
-    C_ORANGE    = colors.HexColor("#f5a623")   # Warning orange
-    C_YELLOW    = colors.HexColor("#f7dc6f")   # Caution yellow
-    C_GREEN     = colors.HexColor("#27ae60")   # Safe green
-    C_WHITE     = colors.white
-    C_LIGHT     = colors.HexColor("#ecf0f1")   # Light grey
+    C_PRIMARY = colors.HexColor("#1a1a2e")
+    C_ACCENT = colors.HexColor("#16213e")
+    C_HIGHLIGHT = colors.HexColor("#0f3460")
+    C_RED = colors.HexColor("#e94560")
+    C_ORANGE = colors.HexColor("#f5a623")
+    C_YELLOW = colors.HexColor("#b7950b")
+    C_GREEN = colors.HexColor("#27ae60")
+    C_WHITE = colors.white
+    C_LIGHT = colors.HexColor("#ecf0f1")
 
     RISK_COLOURS = {
-        "Critical":   C_RED,
+        "Critical": C_RED,
         "Vulnerable": C_ORANGE,
-        "Moderate":   C_YELLOW,
-        "Secure":     C_GREEN,
-        "Low":        C_GREEN,
-        "Medium":     C_YELLOW,
-        "High":       C_ORANGE,
+        "Moderate": C_YELLOW,
+        "Secure": C_GREEN,
+        "Low": C_GREEN,
+        "Medium": C_YELLOW,
+        "High": C_ORANGE,
     }
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def save_pdf_report(
-    networks:    list[dict],
-    scan_meta:   dict,
-    output_path: Optional[str] = None,
-) -> Optional[str]:
-    """Generate and save a PDF security assessment report.
-
-    Args:
-        networks:    Fully-analysed network list (sorted by risk score).
-        scan_meta:   Scan metadata dict.
-        output_path: Optional target path.  If None, a timestamped path in
-                     OUTPUT_DIR is used.
-
-    Returns:
-        Path to the created PDF, or None if ReportLab is unavailable.
-    """
+    networks: list[dict],
+    scan_meta: dict,
+    output_path: str | None = None,
+) -> str | None:
+    """Generate and save a PDF security assessment report."""
     if not REPORTLAB_AVAILABLE:
-        logger.error(
-            "ReportLab is not installed.  Install it with: pip install reportlab"
-        )
+        logger.error("ReportLab is not installed. Install it with: pip install reportlab")
         return None
 
     ensure_dir(OUTPUT_DIR)
     path = output_path or unique_filename(OUTPUT_DIR, "wsa_report", ".pdf")
+    target = Path(path)
+    ensure_dir(target.parent if target.parent != Path("") else Path("."))
 
-    try:
-        _generate_pdf(networks, scan_meta, path)
-        logger.info("PDF report saved → %s", path)
-        return path
-    except Exception as exc:        # pylint: disable=broad-except
-        logger.error("PDF generation failed: %s", exc)
-        raise
+    _generate_pdf(networks, scan_meta, str(target))
+    logger.info("PDF report saved", extra={"event": "pdf_report_saved", "path": str(target)})
+    return str(target)
 
-
-# ── PDF Construction ──────────────────────────────────────────────────────────
 
 def _generate_pdf(networks: list[dict], scan_meta: dict, path: str) -> None:
-    """Build and write the PDF document.
-
-    Args:
-        networks:  Analysed networks.
-        scan_meta: Scan metadata.
-        path:      Output file path.
-    """
     doc = SimpleDocTemplate(
         path,
         pagesize=A4,
@@ -111,296 +91,265 @@ def _generate_pdf(networks: list[dict], scan_meta: dict, path: str) -> None:
 
     styles = _build_styles()
     story: list = []
-
-    # Cover
-    story += _cover_section(scan_meta, networks, styles)
+    story.extend(_cover_section(scan_meta, networks, styles))
     story.append(PageBreak())
-
-    # Executive Summary
-    story += _executive_summary(networks, styles)
+    story.extend(_executive_summary(networks, styles))
     story.append(PageBreak())
-
-    # Network Overview Table
-    story += _network_table_section(networks, styles)
+    story.extend(_network_table_section(networks, styles))
     story.append(PageBreak())
-
-    # Per-Network Detail
-    story += _per_network_details(networks, styles)
-
-    # Recommendations
-    story += _recommendations_section(networks, styles)
-
+    story.extend(_per_network_details(networks, styles))
+    story.extend(_recommendations_section(networks, styles))
     doc.build(story, onFirstPage=_page_footer, onLaterPages=_page_footer)
 
 
-# ── Sections ──────────────────────────────────────────────────────────────────
-
 def _cover_section(meta: dict, networks: list[dict], styles: dict) -> list:
-    ts    = meta.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    iface = meta.get("interface", "unknown")
-    story = [
+    timestamp = meta.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    interface = meta.get("interface", "unknown")
+    mode = "demo" if meta.get("demo_mode") else "live"
+    return [
         Spacer(1, 3 * cm),
-        Paragraph(PDF_COMPANY_NAME.upper(), styles["cover_title"]),
+        Paragraph(_p(PDF_COMPANY_NAME.upper()), styles["cover_title"]),
         Spacer(1, 0.5 * cm),
         Paragraph("Wireless Security Assessment Report", styles["cover_sub"]),
         Spacer(1, 2 * cm),
         HRFlowable(width="100%", thickness=2, color=C_ACCENT),
         Spacer(1, 0.5 * cm),
-        Paragraph(f"Interface: {iface}", styles["cover_meta"]),
-        Paragraph(f"Scan Date: {ts}", styles["cover_meta"]),
+        Paragraph(f"Interface: {_p(interface)}", styles["cover_meta"]),
+        Paragraph(f"Mode: {_p(mode)}", styles["cover_meta"]),
+        Paragraph(f"Scan Date: {_p(timestamp)}", styles["cover_meta"]),
         Paragraph(f"Networks Found: {len(networks)}", styles["cover_meta"]),
         Spacer(1, 2 * cm),
         Paragraph(
-            "⚠  This report contains sensitive security information.  "
-            "Handle accordingly and restrict access to authorised personnel.",
+            "This report contains sensitive security information. Restrict access to authorised personnel.",
             styles["disclaimer"],
         ),
     ]
-    return story
 
 
 def _executive_summary(networks: list[dict], styles: dict) -> list:
-    critical   = sum(1 for n in networks if n.get("risk", {}).get("label") == "Critical")
-    vulnerable = sum(1 for n in networks if n.get("risk", {}).get("label") == "Vulnerable")
-    moderate   = sum(1 for n in networks if n.get("risk", {}).get("label") == "Moderate")
-    secure     = sum(1 for n in networks if n.get("risk", {}).get("label") == "Secure")
-    avg_score  = (
-        round(sum(n.get("risk", {}).get("score", 0) for n in networks) / len(networks), 1)
-        if networks else 0
+    critical = sum(1 for item in networks if item.get("risk", {}).get("label") == "Critical")
+    vulnerable = sum(1 for item in networks if item.get("risk", {}).get("label") == "Vulnerable")
+    moderate = sum(1 for item in networks if item.get("risk", {}).get("label") == "Moderate")
+    secure = sum(1 for item in networks if item.get("risk", {}).get("label") == "Secure")
+    avg_score = (
+        round(sum(item.get("risk", {}).get("score", 0) for item in networks) / len(networks), 1) if networks else 0
     )
 
     summary_data = [
         ["Total Networks", str(len(networks))],
         ["Average Risk Score", f"{avg_score} / 100"],
-        ["Critical",          str(critical)],
-        ["Vulnerable",        str(vulnerable)],
-        ["Moderate",          str(moderate)],
-        ["Secure",            str(secure)],
-        ["Open Networks",     str(sum(1 for n in networks if n.get("encryption") == "OPEN"))],
-        ["WEP Networks",      str(sum(1 for n in networks if n.get("encryption") == "WEP"))],
-        ["WPS Enabled",       str(sum(1 for n in networks if n.get("wps")))],
+        ["Critical", str(critical)],
+        ["Vulnerable", str(vulnerable)],
+        ["Moderate", str(moderate)],
+        ["Secure", str(secure)],
+        ["Open Networks", str(sum(1 for item in networks if item.get("encryption") == "OPEN"))],
+        ["WEP Networks", str(sum(1 for item in networks if item.get("encryption") == "WEP"))],
+        ["WPS Enabled", str(sum(1 for item in networks if item.get("wps")))],
     ]
-
-    tbl = Table(summary_data, colWidths=[8 * cm, 5 * cm])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0), C_PRIMARY),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), C_WHITE),
-        ("FONTNAME",     (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE",     (0, 0), (-1, -1), 10),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [C_LIGHT, C_WHITE]),
-        ("GRID",         (0, 0), (-1, -1), 0.5, colors.grey),
-        ("PADDING",      (0, 0), (-1, -1), 6),
-    ]))
-
-    return [
-        Paragraph("Executive Summary", styles["h1"]),
-        Spacer(1, 0.3 * cm),
-        tbl,
-        Spacer(1, 0.5 * cm),
-    ]
+    table = Table(summary_data, colWidths=[8 * cm, 5 * cm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), C_PRIMARY),
+                ("TEXTCOLOR", (0, 0), (-1, 0), C_WHITE),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [C_LIGHT, C_WHITE]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    return [Paragraph("Executive Summary", styles["h1"]), Spacer(1, 0.3 * cm), table, Spacer(1, 0.5 * cm)]
 
 
 def _network_table_section(networks: list[dict], styles: dict) -> list:
-    story = [Paragraph("Network Overview", styles["h1"]), Spacer(1, 0.3 * cm)]
+    rows = [["#", "SSID", "BSSID", "Signal", "Enc", "WPS", "Score", "Risk"]]
+    for index, network in enumerate(networks, 1):
+        risk = network.get("risk", {})
+        rows.append(
+            [
+                str(index),
+                _t(network.get("ssid", "<hidden>"), limit=40),
+                _t(network.get("bssid", "")),
+                f"{network.get('signal', -100)} dBm",
+                _t(network.get("encryption", "?")),
+                "Yes" if network.get("wps") else "No",
+                str(risk.get("score", 0)),
+                _t(risk.get("label", "?")),
+            ]
+        )
 
-    headers = ["#", "SSID", "BSSID", "Signal", "Enc", "WPS", "Score", "Risk"]
-    rows    = [headers]
-    for idx, net in enumerate(networks, 1):
-        risk  = net.get("risk", {})
-        rows.append([
-            str(idx),
-            net.get("ssid", "<hidden>")[:22],
-            net.get("bssid", ""),
-            f"{net.get('signal', -100)} dBm",
-            net.get("encryption", "?"),
-            "Yes" if net.get("wps") else "No",
-            str(risk.get("score", 0)),
-            risk.get("label", "?"),
-        ])
-
-    col_widths = [0.6*cm, 4.5*cm, 4.0*cm, 2.2*cm, 1.8*cm, 1.4*cm, 1.6*cm, 2.5*cm]
-    tbl = Table(rows, colWidths=col_widths, repeatRows=1)
-
-    tbl_style = [
-        ("BACKGROUND",  (0, 0), (-1, 0), C_PRIMARY),
-        ("TEXTCOLOR",   (0, 0), (-1, 0), C_WHITE),
-        ("FONTNAME",    (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",    (0, 0), (-1, -1), 8),
-        ("GRID",        (0, 0), (-1, -1), 0.3, colors.grey),
-        ("PADDING",     (0, 0), (-1, -1), 4),
+    table = Table(
+        rows, colWidths=[0.6 * cm, 4.5 * cm, 4.0 * cm, 2.2 * cm, 1.8 * cm, 1.4 * cm, 1.6 * cm, 2.5 * cm], repeatRows=1
+    )
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), C_PRIMARY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), C_WHITE),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("PADDING", (0, 0), (-1, -1), 4),
         ("ROWBACKGROUNDS", (1, 0), (-1, -1), [C_LIGHT, C_WHITE]),
     ]
-    # Colour-code Risk column
-    for r_idx, net in enumerate(networks, 1):
-        label = net.get("risk", {}).get("label", "")
-        c     = RISK_COLOURS.get(label, colors.grey)
-        tbl_style.append(("BACKGROUND", (7, r_idx), (7, r_idx), c))
-        tbl_style.append(("TEXTCOLOR",  (7, r_idx), (7, r_idx), C_WHITE))
-        tbl_style.append(("FONTNAME",   (7, r_idx), (7, r_idx), "Helvetica-Bold"))
-
-    tbl.setStyle(TableStyle(tbl_style))
-    story.append(tbl)
-    story.append(Spacer(1, 0.5 * cm))
-    return story
+    for row_index, network in enumerate(networks, 1):
+        label = network.get("risk", {}).get("label", "")
+        colour = RISK_COLOURS.get(label, colors.grey)
+        style.extend(
+            [
+                ("BACKGROUND", (7, row_index), (7, row_index), colour),
+                ("TEXTCOLOR", (7, row_index), (7, row_index), C_WHITE),
+                ("FONTNAME", (7, row_index), (7, row_index), "Helvetica-Bold"),
+            ]
+        )
+    table.setStyle(TableStyle(style))
+    return [Paragraph("Network Overview", styles["h1"]), Spacer(1, 0.3 * cm), table, Spacer(1, 0.5 * cm)]
 
 
 def _per_network_details(networks: list[dict], styles: dict) -> list:
     story = [Paragraph("Detailed Network Analysis", styles["h1"]), Spacer(1, 0.3 * cm)]
 
-    for net in networks:
-        risk  = net.get("risk", {})
+    for network in networks:
+        risk = network.get("risk", {})
         label = risk.get("label", "Unknown")
         score = risk.get("score", 0)
         colour = RISK_COLOURS.get(label, colors.grey)
 
-        # Network header
-        header_data = [[
-            f"{net.get('ssid', '<hidden>')}  |  {net.get('bssid', '')}",
-            f"Score: {score}/100  |  {label}",
-        ]]
-        h_tbl = Table(header_data, colWidths=[11 * cm, 7 * cm])
-        h_tbl.setStyle(TableStyle([
-            ("BACKGROUND",  (0, 0), (-1, -1), C_PRIMARY),
-            ("TEXTCOLOR",   (0, 0), (-1, -1), C_WHITE),
-            ("FONTNAME",    (0, 0), (-1, -1), "Helvetica-Bold"),
-            ("FONTSIZE",    (0, 0), (-1, -1), 10),
-            ("PADDING",     (0, 0), (-1, -1), 6),
-            ("BACKGROUND",  (1, 0), (1, 0), colour),
-        ]))
-        story.append(KeepTogether([h_tbl]))
+        header_table = Table(
+            [
+                [
+                    f"{_t(network.get('ssid', '<hidden>'))} | {_t(network.get('bssid', ''))}",
+                    f"Score: {score}/100 | {_t(label)}",
+                ]
+            ],
+            colWidths=[11 * cm, 7 * cm],
+        )
+        header_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), C_PRIMARY),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), C_WHITE),
+                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 10),
+                    ("PADDING", (0, 0), (-1, -1), 6),
+                    ("BACKGROUND", (1, 0), (1, 0), colour),
+                ]
+            )
+        )
+        story.append(KeepTogether([header_table]))
 
-        # Findings
-        all_findings = []
-        enc_a = net.get("encryption_analysis", {})
-        if enc_a:
-            all_findings.append(enc_a)
-        all_findings.extend(net.get("config_findings", []))
-        all_findings.extend(net.get("rogue_findings", []))
-
-        for f in all_findings:
-            f_colour = RISK_COLOURS.get(f.get("risk_level", ""), colors.grey)
-            finding_data = [
-                [f"▶ {f.get('vulnerability') or f.get('check', '')}",
-                 f.get("risk_level", "")],
-                [Paragraph(f.get("description", ""), styles["body_small"]),
-                 ""],
-                [Paragraph(
-                    f"<b>Scenario:</b> {f.get('unauthorized_access_scenario', '')}",
-                    styles["scenario"]), ""],
-                [Paragraph(
-                    f"<b>Recommendation:</b> {f.get('recommendation', '')}",
-                    styles["rec"]), ""],
-            ]
-            f_tbl = Table(finding_data, colWidths=[15.5 * cm, 2.5 * cm])
-            f_tbl.setStyle(TableStyle([
-                ("BACKGROUND",  (0, 0), (-1, 0), C_ACCENT),
-                ("TEXTCOLOR",   (0, 0), (-1, 0), C_WHITE),
-                ("FONTNAME",    (0, 0), (0, 0), "Helvetica-Bold"),
-                ("FONTSIZE",    (0, 0), (-1, -1), 8),
-                ("BACKGROUND",  (1, 0), (1, 0), f_colour),
-                ("TEXTCOLOR",   (1, 0), (1, 0), C_WHITE),
-                ("VALIGN",      (0, 0), (-1, -1), "TOP"),
-                ("GRID",        (0, 0), (-1, -1), 0.3, colors.lightgrey),
-                ("PADDING",     (0, 0), (-1, -1), 5),
-                ("SPAN",        (0, 1), (1, 1)),
-                ("SPAN",        (0, 2), (1, 2)),
-                ("SPAN",        (0, 3), (1, 3)),
-            ]))
+        for finding in _all_findings(network):
+            finding_table = _finding_table(finding, styles)
             story.append(Spacer(1, 2 * mm))
-            story.append(f_tbl)
+            story.append(finding_table)
 
         story.append(Spacer(1, 0.5 * cm))
 
     return story
 
 
+def _finding_table(finding: dict, styles: dict) -> Table:
+    colour = RISK_COLOURS.get(finding.get("risk_level", ""), colors.grey)
+    title = finding.get("vulnerability") or finding.get("check", "")
+    data = [
+        [f"* {_t(title)}", _t(finding.get("risk_level", ""))],
+        [Paragraph(_p(finding.get("description", ""), limit=2500), styles["body_small"]), ""],
+        [
+            Paragraph(
+                f"<b>Scenario:</b> {_p(finding.get('unauthorized_access_scenario', ''), limit=3000)}",
+                styles["scenario"],
+            ),
+            "",
+        ],
+        [Paragraph(f"<b>Recommendation:</b> {_p(finding.get('recommendation', ''), limit=2500)}", styles["rec"]), ""],
+    ]
+    table = Table(data, colWidths=[15.5 * cm, 2.5 * cm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), C_ACCENT),
+                ("TEXTCOLOR", (0, 0), (-1, 0), C_WHITE),
+                ("FONTNAME", (0, 0), (0, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("BACKGROUND", (1, 0), (1, 0), colour),
+                ("TEXTCOLOR", (1, 0), (1, 0), C_WHITE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.lightgrey),
+                ("PADDING", (0, 0), (-1, -1), 5),
+                ("SPAN", (0, 1), (1, 1)),
+                ("SPAN", (0, 2), (1, 2)),
+                ("SPAN", (0, 3), (1, 3)),
+            ]
+        )
+    )
+    return table
+
+
 def _recommendations_section(networks: list[dict], styles: dict) -> list:
     seen: set[str] = set()
-    recs: list[str] = []
+    recommendations: list[str] = []
+    for network in networks:
+        for finding in _all_findings(network):
+            recommendation = finding.get("recommendation", "")
+            if recommendation and recommendation not in seen:
+                seen.add(recommendation)
+                recommendations.append(recommendation)
 
-    for net in networks:
-        all_f = (
-            [net.get("encryption_analysis", {})]
-            + net.get("config_findings", [])
-            + net.get("rogue_findings", [])
-        )
-        for f in all_f:
-            r = f.get("recommendation", "")
-            if r and r not in seen:
-                seen.add(r)
-                recs.append(r)
-
-    story = [
-        PageBreak(),
-        Paragraph("Consolidated Recommendations", styles["h1"]),
-        Spacer(1, 0.3 * cm),
-    ]
-    for i, rec in enumerate(recs, 1):
-        story.append(Paragraph(f"{i}. {rec}", styles["rec"]))
+    story = [PageBreak(), Paragraph("Consolidated Recommendations", styles["h1"]), Spacer(1, 0.3 * cm)]
+    for index, recommendation in enumerate(recommendations, 1):
+        story.append(Paragraph(f"{index}. {_p(recommendation, limit=2500)}", styles["rec"]))
         story.append(Spacer(1, 2 * mm))
-
     return story
 
 
-# ── Page Footer ───────────────────────────────────────────────────────────────
+def _all_findings(network: dict) -> list[dict]:
+    findings = []
+    encryption = network.get("encryption_analysis", {})
+    if encryption:
+        findings.append(encryption)
+    findings.extend(network.get("config_findings", []))
+    findings.extend(network.get("rogue_findings", []))
+    return findings
+
 
 def _page_footer(canvas, doc) -> None:
-    """Draw a footer on each page."""
     canvas.saveState()
     canvas.setFont("Helvetica", 7)
     canvas.setFillColor(colors.grey)
     canvas.drawString(2 * cm, 1.5 * cm, f"{TOOL_NAME} v{TOOL_VERSION}")
-    canvas.drawRightString(
-        A4[0] - 2 * cm, 1.5 * cm,
-        f"CONFIDENTIAL  |  Page {doc.page}",
-    )
+    canvas.drawRightString(A4[0] - 2 * cm, 1.5 * cm, f"CONFIDENTIAL | Page {doc.page}")
     canvas.restoreState()
 
 
-# ── Style Builder ─────────────────────────────────────────────────────────────
-
 def _build_styles() -> dict:
-    """Create and return a dict of ParagraphStyle objects.
-
-    Returns:
-        Dict mapping style name → ParagraphStyle.
-    """
     base = getSampleStyleSheet()
     return {
         "cover_title": ParagraphStyle(
-            "cover_title", parent=base["Title"],
-            fontSize=28, textColor=C_PRIMARY, spaceAfter=6,
-            alignment=TA_CENTER,
+            "cover_title", parent=base["Title"], fontSize=28, textColor=C_PRIMARY, spaceAfter=6, alignment=TA_CENTER
         ),
         "cover_sub": ParagraphStyle(
-            "cover_sub", parent=base["Normal"],
-            fontSize=16, textColor=C_HIGHLIGHT, spaceAfter=4,
-            alignment=TA_CENTER,
+            "cover_sub", parent=base["Normal"], fontSize=16, textColor=C_HIGHLIGHT, spaceAfter=4, alignment=TA_CENTER
         ),
         "cover_meta": ParagraphStyle(
-            "cover_meta", parent=base["Normal"],
-            fontSize=11, textColor=C_ACCENT, spaceAfter=3,
-            alignment=TA_CENTER,
+            "cover_meta", parent=base["Normal"], fontSize=11, textColor=C_ACCENT, spaceAfter=3, alignment=TA_CENTER
         ),
         "disclaimer": ParagraphStyle(
-            "disclaimer", parent=base["Normal"],
-            fontSize=9, textColor=C_RED, alignment=TA_CENTER,
-            borderPad=4,
+            "disclaimer", parent=base["Normal"], fontSize=9, textColor=C_RED, alignment=TA_CENTER, borderPad=4
         ),
-        "h1": ParagraphStyle(
-            "h1", parent=base["Heading1"],
-            fontSize=14, textColor=C_PRIMARY, spaceAfter=6,
-        ),
-        "body_small": ParagraphStyle(
-            "body_small", parent=base["Normal"],
-            fontSize=8, leading=11,
-        ),
+        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontSize=14, textColor=C_PRIMARY, spaceAfter=6),
+        "body_small": ParagraphStyle("body_small", parent=base["Normal"], fontSize=8, leading=11),
         "scenario": ParagraphStyle(
-            "scenario", parent=base["Normal"],
-            fontSize=8, leading=11, textColor=colors.HexColor("#7f4f00"),
+            "scenario", parent=base["Normal"], fontSize=8, leading=11, textColor=colors.HexColor("#7f4f00")
         ),
         "rec": ParagraphStyle(
-            "rec", parent=base["Normal"],
-            fontSize=8, leading=11, textColor=colors.HexColor("#1a5276"),
+            "rec", parent=base["Normal"], fontSize=8, leading=11, textColor=colors.HexColor("#1a5276")
         ),
     }
+
+
+def _p(value: object, *, limit: int = 1000) -> str:
+    return html_escape(safe_console_text(value, limit=limit))
+
+
+def _t(value: object, *, limit: int = 120) -> str:
+    return safe_console_text(value, limit=limit)

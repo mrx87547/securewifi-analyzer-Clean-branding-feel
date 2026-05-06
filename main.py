@@ -1,372 +1,402 @@
 #!/usr/bin/env python3
 """
-main.py
-WiFi Security Analyzer — CLI entry point.
-
-Usage:
-    python main.py --scan --interface wlan0 --output cli
-    python main.py --scan --interface wlan0 --output json
-    python main.py --scan --interface wlan0 --output pdf --verbose
-    python main.py --scan --output all --verbose
+WiFi Security Analyzer CLI entry point.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
 import sys
-from datetime import datetime
+from pathlib import Path
 
-from rich.console import Console
-from rich.panel import Panel
 from rich import box
+from rich.console import Console
+from rich.markup import escape
+from rich.panel import Panel
+from rich.table import Table
 
-# ── Local imports ──────────────────────────────────────────────────────────────
-from config.settings import (
-    BANNER, ETHICS_DISCLAIMER,
-    TOOL_NAME, TOOL_VERSION,
-    HISTORY_FILE, OUTPUT_DIR,
-)
-from utils.helpers import setup_logging, ensure_dir, timestamp_now, signal_quality_label
-from scanner.scan import scan_networks
 from analyzer.encryption import analyse_encryption
-from analyzer.vulnerabilities import analyse_configuration
 from analyzer.rogue import detect_rogue_aps
-from risk_engine.scoring import calculate_risk_score, rank_networks
+from analyzer.vulnerabilities import analyse_configuration
+from config.settings import (
+    BANNER,
+    DEFAULT_INTERFACE,
+    DEFAULT_SCAN_TIMEOUT,
+    ETHICS_DISCLAIMER,
+    HISTORY_FILE,
+    LOG_DIR,
+    MAX_HISTORY_ENTRIES,
+    MAX_SCAN_TIMEOUT,
+    OUTPUT_DIR,
+    TOOL_NAME,
+    TOOL_VERSION,
+)
 from reporting.report_cli import render_report
 from reporting.report_json import save_json_report
-from reporting.report_pdf import save_pdf_report, REPORTLAB_AVAILABLE
+from reporting.report_pdf import REPORTLAB_AVAILABLE, save_pdf_report
+from risk_engine.scoring import calculate_risk_score, rank_networks
+from scanner.scan import scan_networks
+from utils.helpers import (
+    InputValidationError,
+    atomic_write_text,
+    ensure_dir,
+    load_json_file,
+    safe_console_text,
+    setup_logging,
+    signal_quality_label,
+    timestamp_now,
+    validate_interface_name,
+    validate_timeout,
+)
 
-console = Console()
-logger  = logging.getLogger(__name__)
+console = Console(safe_box=True, emoji=False)
+logger = logging.getLogger(__name__)
 
-
-# ── CLI Argument Parser ────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct and return the argument parser.
-
-    Returns:
-        Configured ArgumentParser instance.
-    """
+    """Construct and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
         prog="wsa",
-        description=f"{TOOL_NAME} v{TOOL_VERSION} — Wireless Security Assessment",
+        description=f"{TOOL_NAME} v{TOOL_VERSION} - Wireless Security Assessment",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python main.py --scan --interface wlan0 --output cli
   python main.py --scan --interface wlan0 --output json
   python main.py --scan --interface wlan0 --output pdf --verbose
-  python main.py --scan --output all --verbose
+  python main.py --scan --output all --verbose --demo
   python main.py --history
         """,
     )
 
+    parser.add_argument("--scan", action="store_true", help="Perform a wireless network scan")
     parser.add_argument(
-        "--scan", action="store_true",
-        help="Perform a wireless network scan",
+        "--interface",
+        "-i",
+        default=DEFAULT_INTERFACE,
+        type=_interface_arg,
+        metavar="IFACE",
+        help=f"Wireless interface to use (default: {DEFAULT_INTERFACE})",
     )
     parser.add_argument(
-        "--interface", "-i", default="wlan0", metavar="IFACE",
-        help="Wireless interface to use (default: wlan0)",
-    )
-    parser.add_argument(
-        "--output", "-o", default="cli",
+        "--output",
+        "-o",
+        default="cli",
         choices=["cli", "json", "pdf", "all"],
         help="Output format: cli | json | pdf | all (default: cli)",
     )
     parser.add_argument(
-        "--duration", "-d", type=int, default=15, metavar="SECS",
-        help="Scan duration in seconds (default: 15)",
+        "--duration",
+        "-d",
+        type=_duration_arg,
+        default=DEFAULT_SCAN_TIMEOUT,
+        metavar="SECS",
+        help=f"Scan duration in seconds (1-{MAX_SCAN_TIMEOUT}, default: {DEFAULT_SCAN_TIMEOUT})",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--demo",
+        action="store_true",
+        help="Use built-in demo scan data instead of live wireless tools",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
         help="Show detailed per-network vulnerability panels in CLI output",
     )
+    parser.add_argument("--history", action="store_true", help="Show a summary of previous scan history")
     parser.add_argument(
-        "--history", action="store_true",
-        help="Show a summary of previous scan history",
+        "--compare",
+        nargs=2,
+        metavar=("SCAN_A", "SCAN_B"),
+        help="Compare two JSON scan reports",
     )
-    parser.add_argument(
-        "--compare", nargs=2, metavar=("SCAN_A", "SCAN_B"),
-        help="Compare two JSON scan reports (file paths)",
-    )
-    parser.add_argument(
-        "--debug", action="store_true",
-        help="Enable debug-level logging",
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug-level logging")
     return parser
 
 
-# ── Core Pipeline ──────────────────────────────────────────────────────────────
-
-def run_analysis(interface: str, duration: int) -> tuple[list[dict], dict]:
-    """Execute the full scan and analysis pipeline.
-
-    Args:
-        interface: Wireless interface name.
-        duration:  Scan timeout in seconds.
-
-    Returns:
-        Tuple of (ranked analysed networks, scan metadata dict).
-    """
+def run_analysis(interface: str, duration: int, *, demo_mode: bool = False) -> tuple[list[dict], dict]:
+    """Execute the full scan and analysis pipeline."""
+    safe_interface = validate_interface_name(interface)
+    safe_duration = validate_timeout(duration, max_seconds=MAX_SCAN_TIMEOUT)
     scan_meta = {
-        "interface": interface,
+        "interface": safe_interface,
         "timestamp": timestamp_now(),
-        "duration":  duration,
+        "duration": safe_duration,
+        "demo_mode": demo_mode,
     }
 
-    # ── Step 1: Scan ──────────────────────────────────────────────────────────
-    console.print(f"[cyan]  Scanning on [bold]{interface}[/bold] …[/cyan]")
-    raw_networks = scan_networks(interface=interface, timeout=duration)
+    console.print(
+        f"[cyan]Scanning on [bold]{escape(safe_interface)}[/bold]{' (demo mode)' if demo_mode else ''}...[/cyan]"
+    )
+    raw_networks = scan_networks(interface=safe_interface, timeout=safe_duration, demo_mode=demo_mode)
 
     if not raw_networks:
-        console.print("[red]No networks found.  Check interface and permissions.[/red]")
+        console.print("[red]No networks found. Check interface, permissions, and installed scan tools.[/red]")
         return [], scan_meta
 
-    console.print(f"[green]  Found {len(raw_networks)} network(s).[/green]")
+    console.print(f"[green]Found {len(raw_networks)} network(s).[/green]")
+    console.print("[cyan]Detecting rogue AP indicators...[/cyan]")
+    rogue_map = detect_rogue_aps(raw_networks)
 
-    # ── Step 2: Rogue AP detection (needs full set) ───────────────────────────
-    console.print("[cyan]  Detecting rogue APs …[/cyan]")
-    rogue_map = detect_rogue_aps(raw_networks)   # BSSID → list[finding]
-
-    # ── Step 3: Per-network analysis ──────────────────────────────────────────
-    console.print("[cyan]  Analysing security configurations …[/cyan]")
+    console.print("[cyan]Analysing security configurations...[/cyan]")
     analysed: list[dict] = []
 
-    for net in raw_networks:
-        enc_analysis    = analyse_encryption(net)
-        config_findings = analyse_configuration(net)
-        rogue_findings  = rogue_map.get(net["bssid"], [])
+    for raw in raw_networks:
+        network = dict(raw)
+        enc_analysis = analyse_encryption(network)
+        config_findings = analyse_configuration(network)
+        rogue_findings = rogue_map.get(network.get("bssid", ""), [])
 
         risk = calculate_risk_score(
-            network=net,
+            network=network,
             encryption_result=enc_analysis,
             config_findings=config_findings,
             rogue_findings=rogue_findings,
         )
 
-        net["encryption_analysis"] = enc_analysis
-        net["config_findings"]     = config_findings
-        net["rogue_findings"]      = rogue_findings
-        net["risk"]                = risk
-        net["signal_quality"]      = signal_quality_label(net.get("signal", -100))
-        analysed.append(net)
+        network["encryption_analysis"] = enc_analysis
+        network["config_findings"] = config_findings
+        network["rogue_findings"] = rogue_findings
+        network["risk"] = risk
+        network["signal_quality"] = signal_quality_label(network.get("signal", -100))
+        analysed.append(network)
 
     ranked = rank_networks(analysed)
-    console.print(f"[green]  Analysis complete.  Ranked {len(ranked)} networks.[/green]\n")
+    console.print(f"[green]Analysis complete. Ranked {len(ranked)} networks.[/green]\n")
+    logger.info(
+        "Analysis completed",
+        extra={"event": "analysis_completed", "network_count": len(ranked), "demo_mode": demo_mode},
+    )
     return ranked, scan_meta
 
 
-# ── History ───────────────────────────────────────────────────────────────────
-
 def save_to_history(networks: list[dict], scan_meta: dict) -> None:
-    """Append this scan's summary to the history file.
-
-    Args:
-        networks:  Analysed networks.
-        scan_meta: Scan metadata.
-    """
+    """Append this scan's summary to the bounded history file."""
     ensure_dir(OUTPUT_DIR)
-    history: list[dict] = []
-
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as fh:
-                history = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            history = []
+    history = _load_history()
 
     entry = {
-        "timestamp":  scan_meta.get("timestamp"),
-        "interface":  scan_meta.get("interface"),
-        "networks":   len(networks),
-        "critical":   sum(1 for n in networks if n.get("risk", {}).get("label") == "Critical"),
-        "vulnerable": sum(1 for n in networks if n.get("risk", {}).get("label") == "Vulnerable"),
-        "avg_score":  (
-            round(sum(n.get("risk", {}).get("score", 0) for n in networks) / len(networks), 1)
-            if networks else 0
+        "timestamp": scan_meta.get("timestamp"),
+        "interface": scan_meta.get("interface"),
+        "demo_mode": bool(scan_meta.get("demo_mode", False)),
+        "networks": len(networks),
+        "critical": sum(1 for item in networks if item.get("risk", {}).get("label") == "Critical"),
+        "vulnerable": sum(1 for item in networks if item.get("risk", {}).get("label") == "Vulnerable"),
+        "avg_score": (
+            round(sum(item.get("risk", {}).get("score", 0) for item in networks) / len(networks), 1) if networks else 0
         ),
     }
     history.append(entry)
+    history = history[-MAX_HISTORY_ENTRIES:]
 
-    with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
-        json.dump(history, fh, indent=2)
+    atomic_write_text(HISTORY_FILE, json.dumps(history, indent=2, ensure_ascii=False))
+    logger.info("History updated", extra={"event": "history_updated", "entries": len(history)})
 
 
 def show_history() -> None:
     """Print the scan history table to the console."""
-    if not os.path.exists(HISTORY_FILE):
+    history = _load_history()
+    if not history:
         console.print("[yellow]No scan history found.[/yellow]")
         return
 
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as fh:
-            history = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        console.print(f"[red]Failed to read history: {exc}[/red]")
-        return
+    table = Table(title="Scan History", show_lines=True, header_style="bold cyan", box=box.ASCII)
+    table.add_column("Timestamp", min_width=20)
+    table.add_column("Interface", width=12)
+    table.add_column("Mode", width=7)
+    table.add_column("Networks", justify="right", width=9)
+    table.add_column("Critical", justify="right", width=9)
+    table.add_column("Vulnerable", justify="right", width=10)
+    table.add_column("Avg Score", justify="right", width=9)
 
-    from rich.table import Table
-    tbl = Table(title="Scan History", show_lines=True, header_style="bold cyan")
-    tbl.add_column("Timestamp",  min_width=20)
-    tbl.add_column("Interface",  width=10)
-    tbl.add_column("Networks",   justify="right", width=9)
-    tbl.add_column("Critical",   justify="right", width=9)
-    tbl.add_column("Vulnerable", justify="right", width=10)
-    tbl.add_column("Avg Score",  justify="right", width=9)
-
-    for entry in history[-20:]:    # Show latest 20
-        crit_str = str(entry.get("critical", 0))
-        crit_coloured = (
-            f"[bright_red]{crit_str}[/bright_red]"
-            if int(crit_str) > 0 else crit_str
-        )
-        tbl.add_row(
-            entry.get("timestamp", ""),
-            entry.get("interface", ""),
+    for entry in history[-20:]:
+        critical = int(entry.get("critical", 0))
+        critical_cell = f"[bright_red]{critical}[/bright_red]" if critical else str(critical)
+        table.add_row(
+            escape(safe_console_text(entry.get("timestamp", ""))),
+            escape(safe_console_text(entry.get("interface", ""))),
+            "demo" if entry.get("demo_mode") else "live",
             str(entry.get("networks", 0)),
-            crit_coloured,
+            critical_cell,
             str(entry.get("vulnerable", 0)),
             str(entry.get("avg_score", 0)),
         )
 
-    console.print(tbl)
+    console.print(table)
 
-
-# ── Scan Comparison ───────────────────────────────────────────────────────────
 
 def compare_scans(path_a: str, path_b: str) -> None:
-    """Print a comparison between two JSON scan reports.
-
-    Args:
-        path_a: Path to the first JSON report.
-        path_b: Path to the second JSON report.
-    """
-    def _load(p: str) -> dict:
-        with open(p, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-
+    """Print a comparison between two JSON scan reports."""
     try:
-        a, b = _load(path_a), _load(path_b)
-    except (OSError, json.JSONDecodeError) as exc:
-        console.print(f"[red]Failed to load reports: {exc}[/red]")
+        report_a = _load_report(path_a)
+        report_b = _load_report(path_b)
+    except (InputValidationError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Failed to load reports: {escape(safe_console_text(exc))}[/red]")
         return
 
-    ts_a = a.get("report_metadata", {}).get("scan_started", path_a)
-    ts_b = b.get("report_metadata", {}).get("scan_started", path_b)
+    ts_a = report_a.get("report_metadata", {}).get("scan_started", path_a)
+    ts_b = report_b.get("report_metadata", {}).get("scan_started", path_b)
+    networks_a = _network_map(report_a)
+    networks_b = _network_map(report_b)
 
-    nets_a = {n["bssid"]: n for n in a.get("networks", [])}
-    nets_b = {n["bssid"]: n for n in b.get("networks", [])}
+    new_bssids = set(networks_b) - set(networks_a)
+    gone_bssids = set(networks_a) - set(networks_b)
+    common = set(networks_a) & set(networks_b)
 
-    new_bssids  = set(nets_b) - set(nets_a)
-    gone_bssids = set(nets_a) - set(nets_b)
-    common      = set(nets_a) & set(nets_b)
-
-    from rich.table import Table
-    tbl = Table(title=f"Scan Comparison\n{ts_a}  vs  {ts_b}", show_lines=True)
-    tbl.add_column("SSID")
-    tbl.add_column("BSSID")
-    tbl.add_column("Change")
-    tbl.add_column("Score A → B")
+    table = Table(
+        title=f"Scan Comparison\n{safe_console_text(ts_a)} vs {safe_console_text(ts_b)}",
+        show_lines=True,
+        box=box.ASCII,
+    )
+    table.add_column("SSID")
+    table.add_column("BSSID")
+    table.add_column("Change")
+    table.add_column("Score A -> B")
 
     for bssid in sorted(new_bssids):
-        n = nets_b[bssid]
-        tbl.add_row(
-            n.get("ssid", ""), bssid,
+        network = networks_b[bssid]
+        table.add_row(
+            escape(safe_console_text(network.get("ssid", ""))),
+            escape(safe_console_text(bssid)),
             "[bright_green]NEW[/bright_green]",
-            f"—  →  {n.get('risk', {}).get('score', '?')}",
+            f"- -> {network.get('risk', {}).get('score', '?')}",
         )
     for bssid in sorted(gone_bssids):
-        n = nets_a[bssid]
-        tbl.add_row(
-            n.get("ssid", ""), bssid,
+        network = networks_a[bssid]
+        table.add_row(
+            escape(safe_console_text(network.get("ssid", ""))),
+            escape(safe_console_text(bssid)),
             "[dim]GONE[/dim]",
-            f"{n.get('risk', {}).get('score', '?')}  →  —",
+            f"{network.get('risk', {}).get('score', '?')} -> -",
         )
     for bssid in sorted(common):
-        sa = nets_a[bssid].get("risk", {}).get("score", 0)
-        sb = nets_b[bssid].get("risk", {}).get("score", 0)
-        delta = sb - sa
+        score_a = _score(networks_a[bssid])
+        score_b = _score(networks_b[bssid])
+        delta = score_b - score_a
         colour = "bright_red" if delta > 5 else "bright_green" if delta < -5 else "white"
-        tbl.add_row(
-            nets_b[bssid].get("ssid", ""), bssid,
+        table.add_row(
+            escape(safe_console_text(networks_b[bssid].get("ssid", ""))),
+            escape(safe_console_text(bssid)),
             f"[{colour}]{'+' if delta >= 0 else ''}{delta}[/{colour}]",
-            f"{sa}  →  {sb}",
+            f"{score_a} -> {score_b}",
         )
 
-    console.print(tbl)
+    console.print(table)
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    """Application entry point.
-
-    Returns:
-        Exit code (0 = success, 1 = error).
-    """
+    """Application entry point."""
     parser = build_parser()
-    args   = parser.parse_args()
+    args = parser.parse_args()
 
-    # Logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    setup_logging(level=log_level)
+    setup_logging(log_dir=LOG_DIR, level=logging.DEBUG if args.debug else logging.INFO)
 
-    # Banner + disclaimer
-    console.print(BANNER, style="cyan", highlight=False)
-    console.print(Panel(
-        ETHICS_DISCLAIMER.strip(),
-        border_style="yellow",
-        box=box.HEAVY,
-    ))
+    try:
+        console.print(BANNER, style="cyan", highlight=False)
+        console.print(Panel(ETHICS_DISCLAIMER.strip(), border_style="yellow", box=box.ASCII))
 
-    # ── History ───────────────────────────────────────────────────────────────
-    if args.history:
-        show_history()
+        if args.history:
+            show_history()
+            return 0
+
+        if args.compare:
+            compare_scans(args.compare[0], args.compare[1])
+            return 0
+
+        if not args.scan:
+            parser.print_help()
+            return 0
+
+        networks, scan_meta = run_analysis(args.interface, args.duration, demo_mode=args.demo)
+        if not networks:
+            return 1
+
+        save_to_history(networks, scan_meta)
+
+        output = args.output.lower()
+        if output in ("cli", "all"):
+            render_report(networks, scan_meta, verbose=args.verbose)
+
+        if output in ("json", "all"):
+            json_path = save_json_report(networks, scan_meta)
+            console.print(f"[green]OK JSON report saved -> [bold]{escape(json_path)}[/bold][/green]")
+
+        if output in ("pdf", "all"):
+            if not REPORTLAB_AVAILABLE:
+                console.print("[red]ReportLab is not installed. Install with: pip install reportlab[/red]")
+            else:
+                pdf_path = save_pdf_report(networks, scan_meta)
+                if pdf_path:
+                    console.print(f"[green]OK PDF report saved -> [bold]{escape(pdf_path)}[/bold][/green]")
+
         return 0
-
-    # ── Compare ───────────────────────────────────────────────────────────────
-    if args.compare:
-        compare_scans(args.compare[0], args.compare[1])
-        return 0
-
-    # ── Scan + Analyse ────────────────────────────────────────────────────────
-    if not args.scan:
-        parser.print_help()
-        return 0
-
-    networks, scan_meta = run_analysis(args.interface, args.duration)
-
-    if not networks:
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user", extra={"event": "interrupted"})
+        console.print("[yellow]Interrupted.[/yellow]")
+        return 130
+    except InputValidationError as exc:
+        logger.warning("Input validation failed", extra={"event": "validation_failed", "error": str(exc)})
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return 2
+    except Exception as exc:
+        logger.exception("Fatal application error", extra={"event": "fatal_error"})
+        console.print(f"[red]Fatal error: {escape(safe_console_text(exc))}[/red]")
         return 1
 
-    # Save to history
-    save_to_history(networks, scan_meta)
 
-    # ── Output ────────────────────────────────────────────────────────────────
-    output = args.output.lower()
+def _interface_arg(value: str) -> str:
+    try:
+        return validate_interface_name(value)
+    except InputValidationError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    if output in ("cli", "all"):
-        render_report(networks, scan_meta, verbose=args.verbose)
 
-    if output in ("json", "all"):
-        json_path = save_json_report(networks, scan_meta)
-        console.print(f"[green]✓ JSON report saved → [bold]{json_path}[/bold][/green]")
+def _duration_arg(value: str) -> int:
+    try:
+        return validate_timeout(int(value), max_seconds=MAX_SCAN_TIMEOUT)
+    except (ValueError, InputValidationError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    if output in ("pdf", "all"):
-        if not REPORTLAB_AVAILABLE:
-            console.print(
-                "[red]ReportLab is not installed.  "
-                "Install with: pip install reportlab[/red]"
-            )
-        else:
-            pdf_path = save_pdf_report(networks, scan_meta)
-            if pdf_path:
-                console.print(f"[green]✓ PDF report saved → [bold]{pdf_path}[/bold][/green]")
 
-    return 0
+def _load_history() -> list[dict]:
+    path = Path(HISTORY_FILE)
+    if not path.exists():
+        return []
+    try:
+        data = load_json_file(path)
+    except (InputValidationError, json.JSONDecodeError, OSError) as exc:
+        logger.warning("History read failed", extra={"event": "history_read_failed", "error": str(exc)})
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _load_report(path: str) -> dict:
+    data = load_json_file(path)
+    if not isinstance(data, dict):
+        raise InputValidationError("Report JSON must contain an object.")
+    if not isinstance(data.get("networks", []), list):
+        raise InputValidationError("Report JSON has an invalid networks field.")
+    return data
+
+
+def _network_map(report: dict) -> dict[str, dict]:
+    networks: dict[str, dict] = {}
+    for item in report.get("networks", []):
+        if isinstance(item, dict):
+            bssid = str(item.get("bssid", "")).upper()
+            if bssid:
+                networks[bssid] = item
+    return networks
+
+
+def _score(network: dict) -> int:
+    try:
+        return int(network.get("risk", {}).get("score", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 if __name__ == "__main__":
